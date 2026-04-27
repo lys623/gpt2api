@@ -34,7 +34,7 @@ type CreateInput struct {
 	ChatGPTAccountID string    `json:"chatgpt_account_id"`
 	AccountType      string    `json:"account_type"`
 	PlanType         string    `json:"plan_type"`
-	DailyImageQuota  int       `json:"daily_image_quota"`
+	DailyImageQuota  *int      `json:"daily_image_quota"`
 	Notes            string    `json:"notes"`
 	Cookies          string    `json:"cookies"`
 	ProxyID          uint64    `json:"proxy_id"` // 可选:立即绑定
@@ -53,7 +53,7 @@ type UpdateInput struct {
 	ChatGPTAccountID string    `json:"chatgpt_account_id"`
 	AccountType      string    `json:"account_type"`
 	PlanType         string    `json:"plan_type"`
-	DailyImageQuota  int       `json:"daily_image_quota"`
+	DailyImageQuota  *int      `json:"daily_image_quota"`
 	Status           string    `json:"status"`
 	Notes            string    `json:"notes"`
 	Cookies          string    `json:"cookies"`
@@ -88,8 +88,12 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Account, error) 
 	if in.PlanType == "" {
 		in.PlanType = "plus"
 	}
-	if in.DailyImageQuota == 0 {
-		in.DailyImageQuota = 100
+	dailyImageQuota := 100
+	if in.DailyImageQuota != nil {
+		if *in.DailyImageQuota < 0 {
+			return nil, errors.New("daily_image_quota 不能为负数")
+		}
+		dailyImageQuota = *in.DailyImageQuota
 	}
 	if in.ClientID == "" {
 		in.ClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
@@ -101,7 +105,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Account, error) 
 		Email: in.Email, AuthTokenEnc: atEnc, RefreshTokenEnc: rtEnc, SessionTokenEnc: stEnc,
 		OAISessionID: in.OAISessionID, OAIDeviceID: in.OAIDeviceID,
 		ClientID: in.ClientID, ChatGPTAccountID: in.ChatGPTAccountID, AccountType: in.AccountType,
-		PlanType: in.PlanType, DailyImageQuota: in.DailyImageQuota,
+		PlanType: in.PlanType, DailyImageQuota: dailyImageQuota,
 		Status: StatusHealthy, Notes: in.Notes,
 	}
 	if !in.TokenExpiresAt.IsZero() {
@@ -188,8 +192,11 @@ func (s *Service) Update(ctx context.Context, id uint64, in UpdateInput) (*Accou
 	if in.PlanType != "" {
 		a.PlanType = in.PlanType
 	}
-	if in.DailyImageQuota > 0 {
-		a.DailyImageQuota = in.DailyImageQuota
+	if in.DailyImageQuota != nil {
+		if *in.DailyImageQuota < 0 {
+			return nil, errors.New("daily_image_quota 不能为负数")
+		}
+		a.DailyImageQuota = *in.DailyImageQuota
 	}
 	if in.Status != "" {
 		a.Status = in.Status

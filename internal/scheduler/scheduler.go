@@ -3,7 +3,7 @@
 // 核心规则(参考 RISK_AND_SAAS.md):
 //  1. 一号一锁:同账号同时只允许 1 个请求占用(Redis SETNX)。
 //  2. 最小间隔:同账号相邻请求 >= min_interval_sec。
-//  3. 每日配额:优先使用未超过 daily_usage_ratio 的账号,仅在探测明确剩余 0 时硬停。
+//  3. 每日配额:daily_image_quota 为人工硬熔断;daily_usage_ratio 仅用于提前降优先级。
 //  4. 状态机:healthy -> warned -> throttled -> suspicious -> dead,冷却过期自动恢复。
 //  5. 选择策略:status=healthy + cooldown 到期 + last_used_at 最早的优先。
 package scheduler
@@ -39,6 +39,7 @@ type dispatchSkipStats struct {
 	CandidateCount     int
 	SkippedInterval    int
 	SkippedQuota       int
+	SkippedDailyLimit  int
 	DeprioritizedQuota int
 	SkippedLockBusy    int
 	SkippedLockErr     int
@@ -288,12 +289,22 @@ func (s *Scheduler) tryDispatchOnce(ctx context.Context, modelType string) (*Lea
 			})
 			continue
 		}
+		usedToday := todayUsed(acc, now)
+		if isDailyLimitExceeded(acc, usedToday) {
+			stats.SkippedDailyLimit++
+			stats.addSample(dispatchSkipSample{
+				AccountID:       acc.ID,
+				Status:          acc.Status,
+				Reason:          "daily_quota_exhausted",
+				UsedToday:       usedToday,
+				DailyQuota:      acc.DailyImageQuota,
+				ConfiguredQuota: acc.DailyImageQuota,
+				ImageQuotaTotal: acc.ImageQuotaTotal,
+			})
+			continue
+		}
 		dailyQuota := effectiveDailyQuota(acc)
 		if dailyQuota > 0 {
-			usedToday := 0
-			if acc.TodayUsedDate.Valid && sameDay(acc.TodayUsedDate.Time, now) {
-				usedToday = acc.TodayUsedCount
-			}
 			softLimit := int(float64(dailyQuota) * dailyRatio)
 			if softLimit > 0 && usedToday >= softLimit {
 				stats.DeprioritizedQuota++
@@ -373,6 +384,7 @@ func (s *Scheduler) logNoAvailable(ctx context.Context, modelType string, attemp
 			zap.Int("candidate_count", last.stats.CandidateCount),
 			zap.Int("skipped_min_interval", last.stats.SkippedInterval),
 			zap.Int("skipped_quota_exhausted", last.stats.SkippedQuota),
+			zap.Int("skipped_daily_limit", last.stats.SkippedDailyLimit),
 			zap.Int("deprioritized_daily_quota", last.stats.DeprioritizedQuota),
 			zap.Int("skipped_lock_busy", last.stats.SkippedLockBusy),
 			zap.Int("skipped_lock_error", last.stats.SkippedLockErr),
@@ -500,15 +512,28 @@ func sameDay(a, b time.Time) bool {
 	return a.Year() == b.Year() && a.Month() == b.Month() && a.Day() == b.Day()
 }
 
+func todayUsed(acc *account.Account, now time.Time) int {
+	if acc == nil || !acc.TodayUsedDate.Valid || !sameDay(acc.TodayUsedDate.Time, now) {
+		return 0
+	}
+	return acc.TodayUsedCount
+}
+
+func isDailyLimitExceeded(acc *account.Account, usedToday int) bool {
+	if acc == nil || acc.DailyImageQuota <= 0 {
+		return false
+	}
+	return usedToday >= acc.DailyImageQuota
+}
+
 func effectiveDailyQuota(acc *account.Account) int {
 	if acc == nil {
 		return 0
 	}
-	quota := acc.DailyImageQuota
-	if acc.ImageQuotaTotal > quota {
-		quota = acc.ImageQuotaTotal
+	if acc.DailyImageQuota > 0 {
+		return acc.DailyImageQuota
 	}
-	return quota
+	return acc.ImageQuotaTotal
 }
 
 func isImageQuotaExhausted(acc *account.Account, now time.Time) bool {

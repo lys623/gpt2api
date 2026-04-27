@@ -379,7 +379,7 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 
 	// 统一把 model 强制为 "auto":对齐参考实现(只通过 system_hints=["picture_v2"]
 	// 区分图像任务)。
-	// 注意:免费账号(persona=chatgpt-freeaccount)也可以生成图片,只要 daily_image_quota > 0。
+	// 注意:免费账号(persona=chatgpt-freeaccount)也可以生成图片;是否派发由调度器额度/熔断规则决定。
 	// 不再按 persona 拒绝请求;persona 仅做日志记录。
 	upstreamModel := "auto"
 	if opt.UpstreamModel != "" && opt.UpstreamModel != "auto" {
@@ -437,6 +437,15 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 				zap.Int("status", ue.Status),
 				zap.String("body", truncate(ue.Body, 500)))
 			return false, ErrNetworkTransient, ue
+		}
+		if errors.As(err, &ue) {
+			logger.L().Warn("image runner f/conversation upstream error",
+				zap.String("task_id", opt.TaskID),
+				zap.Uint64("account_id", lease.Account.ID),
+				zap.Int("status", ue.Status),
+				zap.Bool("skipped_mainline", upstreamBodySkippedMainline(ue.Body)),
+				zap.String("conv_id_from_error", ue.ConversationID()),
+				zap.String("body", truncate(ue.Body, 500)))
 		}
 		code := r.classifyUpstream(err)
 		if code == ErrRateLimited {
@@ -532,6 +541,11 @@ afterSSE:
 			zap.Uint64("account_id", lease.Account.ID),
 			zap.String("conv_id", convID),
 			zap.String("poll_status", string(status)),
+			zap.String("poll_text", truncate(assistantText, 500)),
+			zap.Int("expected_n", opt.N),
+			zap.Int("existing_refs", len(fileRefs)),
+			zap.Duration("poll_max_wait", opt.PollMaxWait),
+			zap.Duration("sediment_only_min_wait", pollOpt.SedimentOnlyMinWait),
 			zap.Int("poll_fids", len(fids)),
 			zap.Strings("poll_fids_list", fids),
 			zap.Int("poll_sids", len(sids)),

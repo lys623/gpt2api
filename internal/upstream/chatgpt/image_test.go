@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -99,11 +100,44 @@ func TestPollConversationForImagesReturnsErrorWithoutConversationID(t *testing.T
 	if status != PollStatusError {
 		t.Fatalf("status = %q, want %q", status, PollStatusError)
 	}
-	if len(fids) != 0 || len(sids) != 0 || assistantText != "" {
+	if len(fids) != 0 || len(sids) != 0 || assistantText == "" {
 		t.Fatalf("unexpected result: fids=%v sids=%v text=%q", fids, sids, assistantText)
 	}
 	if time.Since(start) > time.Second {
 		t.Fatalf("empty convID should fail fast, took %s", time.Since(start))
+	}
+}
+
+func TestPollConversationForImagesReturns429Diagnostics(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/conversation/conv_rate_limited" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		calls++
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"rate limited"}`))
+	}))
+	defer srv.Close()
+
+	c := &Client{opts: Options{BaseURL: srv.URL}, hc: srv.Client()}
+	status, fids, sids, assistantText := c.PollConversationForImages(
+		context.Background(),
+		"conv_rate_limited",
+		PollOpts{MaxWait: time.Minute, Interval: time.Millisecond, RateLimitBackoff: time.Millisecond},
+	)
+
+	if status != PollStatusError {
+		t.Fatalf("status = %q, want %q", status, PollStatusError)
+	}
+	if len(fids) != 0 || len(sids) != 0 {
+		t.Fatalf("unexpected image refs: fids=%v sids=%v", fids, sids)
+	}
+	if calls != 3 {
+		t.Fatalf("calls = %d, want 3", calls)
+	}
+	if !strings.Contains(assistantText, "429") || !strings.Contains(assistantText, "rate limited") {
+		t.Fatalf("assistantText = %q, want 429 diagnostic with body", assistantText)
 	}
 }
 

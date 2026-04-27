@@ -207,7 +207,7 @@ async function openEdit(row: accountApi.Account) {
     chatgpt_account_id: row.chatgpt_account_id || '',
     account_type: row.account_type || 'codex',
     plan_type: row.plan_type || 'plus',
-    daily_image_quota: row.daily_image_quota || 100,
+    daily_image_quota: row.daily_image_quota ?? 100,
     notes: row.notes || '',
     cookies: '',
     proxy_id: 0,
@@ -874,7 +874,7 @@ onMounted(() => {
                       (剩余 {{ row.image_quota_remaining }})
                     </span>
                   </div>
-                  <div style="color:#a1a5ad">熔断阈值(仅用于停止派发):{{ row.daily_image_quota }} / 日</div>
+                  <div style="color:#a1a5ad">人工每日熔断:{{ row.daily_image_quota > 0 ? row.daily_image_quota + ' / 日' : '关闭' }}</div>
                   <div v-if="row.image_quota_total <= 0 && row.image_quota_remaining < 0" style="color:#f5a623">
                     首次探测约 5 小时内完成;额度=0 时会忽略间隔立即补测。
                   </div>
@@ -1042,8 +1042,8 @@ onMounted(() => {
         <el-form-item label="熔断阈值(每日)">
           <el-input-number v-model="form.daily_image_quota" :min="0" :max="10000" />
           <div style="font-size:12px; color:#909399; margin-top:4px; line-height:1.5">
-            仅用于"消耗超过此值自动暂停派发"。真实图片上限由系统每 5 小时自动探测一次,
-            填 100 只是兜底熔断线,**不会**覆盖探测到的真实额度。
+            当日使用次数达到此值后停止派发;填 0 表示关闭人工每日熔断。
+            真实剩余额度探测为 0 时仍会停止派发。
           </div>
         </el-form-item>
         <el-form-item v-if="isEdit" label="状态">

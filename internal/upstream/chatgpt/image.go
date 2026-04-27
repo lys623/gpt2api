@@ -634,6 +634,7 @@ type PollOpts struct {
 	ExpectedN           int                 // 期望返回的图片张数,够了立即短路,默认 1
 	MaxWait             time.Duration       // 总超时,默认 300s(上游渲染慢时兜底补齐)
 	Interval            time.Duration       // 轮询间隔,默认 3s
+	RateLimitBackoff    time.Duration       // conversation 轮询遇到 429 后退避,默认 10s
 	SedimentOnlyMinWait time.Duration       // 只有 sediment 时至少等一会儿,给 file-service 终稿补齐
 }
 
@@ -654,7 +655,7 @@ const (
 // file-service 优先(优先级更高),sediment 作为补充一并带出,调用方自行决定用几张。
 func (c *Client) PollConversationForImages(ctx context.Context, convID string, opt PollOpts) (PollStatus, []string, []string, string) {
 	if strings.TrimSpace(convID) == "" {
-		return PollStatusError, nil, nil, ""
+		return PollStatusError, nil, nil, "conversation_id missing before image poll"
 	}
 	if opt.ExpectedN <= 0 {
 		opt.ExpectedN = 1
@@ -664,6 +665,9 @@ func (c *Client) PollConversationForImages(ctx context.Context, convID string, o
 	}
 	if opt.Interval <= 0 {
 		opt.Interval = 3 * time.Second
+	}
+	if opt.RateLimitBackoff <= 0 {
+		opt.RateLimitBackoff = 10 * time.Second
 	}
 	baseline := opt.BaselineToolIDs
 
@@ -678,23 +682,31 @@ func (c *Client) PollConversationForImages(ctx context.Context, convID string, o
 		consecutive429 int
 		assistantText  string
 		sedOnlySince   time.Time
+		lastPollErr    string
+		pollAttempts   int
 	)
 
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
-			return PollStatusError, nil, nil, assistantText
+			return PollStatusError, nil, nil, firstNonEmpty(assistantText, "image poll context canceled: "+ctx.Err().Error())
 		default:
 		}
 
 		mapping, err := c.getMappingRaw(ctx, convID)
+		pollAttempts++
 		if err != nil {
+			lastPollErr = pollErrorText(err)
 			if ue, ok := err.(*UpstreamError); ok && ue.Status == 429 {
 				consecutive429++
 				if consecutive429 >= 3 {
-					return PollStatusError, nil, nil, assistantText
+					msg := fmt.Sprintf("conversation poll hit %d consecutive 429 after %d attempts", consecutive429, pollAttempts)
+					if lastPollErr != "" {
+						msg += ": " + lastPollErr
+					}
+					return PollStatusError, nil, nil, firstNonEmpty(assistantText, msg)
 				}
-				sleep(ctx, 10*time.Second)
+				sleep(ctx, opt.RateLimitBackoff)
 				continue
 			}
 			sleep(ctx, opt.Interval)
@@ -765,7 +777,21 @@ func (c *Client) PollConversationForImages(ctx context.Context, convID string, o
 	if len(allFile)+len(allSed) > 0 {
 		return PollStatusSuccess, allFile, allSed, assistantText
 	}
-	return PollStatusTimeout, nil, nil, assistantText
+	return PollStatusTimeout, nil, nil, firstNonEmpty(assistantText, lastPollErr)
+}
+
+func pollErrorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	if ue, ok := err.(*UpstreamError); ok {
+		body := truncateStr(strings.TrimSpace(ue.Body), 500)
+		if body != "" {
+			return fmt.Sprintf("conversation poll upstream http=%d body=%s", ue.Status, body)
+		}
+		return fmt.Sprintf("conversation poll upstream http=%d message=%s", ue.Status, ue.Message)
+	}
+	return truncateStr(err.Error(), 500)
 }
 
 func isTerminalImageRejectionText(s string) bool {
