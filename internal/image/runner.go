@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	stdimage "image"
-	"math/bits"
 	"strings"
 	"sync"
 	"time"
@@ -730,12 +729,12 @@ type imageFingerprint struct {
 	rawSHA256 [32]byte
 	width     int
 	height    int
-	avgHash   uint64
-	avgR      uint32
-	avgG      uint32
-	avgB      uint32
-	hasAvg    bool
+	samples   [imageFingerprintSamples][3]uint8
+	hasSample bool
 }
+
+const imageFingerprintGrid = 32
+const imageFingerprintSamples = imageFingerprintGrid * imageFingerprintGrid
 
 func referenceImageFingerprints(refs []ReferenceImage) []imageFingerprint {
 	out := make([]imageFingerprint, 0, len(refs))
@@ -757,7 +756,7 @@ func fingerprintImageBytes(data []byte) imageFingerprint {
 	b := img.Bounds()
 	fp.width = b.Dx()
 	fp.height = b.Dy()
-	fp.avgHash, fp.avgR, fp.avgG, fp.avgB, fp.hasAvg = averageImageHash(img)
+	fp.samples, fp.hasSample = sampledImageColors(img)
 	return fp
 }
 
@@ -770,60 +769,55 @@ func matchesReferenceImage(data []byte, refs []imageFingerprint) bool {
 		if candidate.rawSHA256 == ref.rawSHA256 {
 			return true
 		}
-		if !candidate.hasAvg || !ref.hasAvg {
+		if !candidate.hasSample || !ref.hasSample {
 			continue
 		}
-		dist := bits.OnesCount64(candidate.avgHash ^ ref.avgHash)
-		colorDist := averageColorDistance(candidate, ref)
-		if candidate.width == ref.width && candidate.height == ref.height && dist <= 1 && colorDist <= 12 {
-			return true
+		if candidate.width != ref.width || candidate.height != ref.height {
+			continue
 		}
-		if dist == 0 && colorDist <= 8 {
+		meanDiff, maxDiff := sampledImageDistance(candidate, ref)
+		if meanDiff <= 2 && maxDiff <= 8 {
 			return true
 		}
 	}
 	return false
 }
 
-func averageImageHash(img stdimage.Image) (uint64, uint32, uint32, uint32, bool) {
+func sampledImageColors(img stdimage.Image) ([imageFingerprintSamples][3]uint8, bool) {
+	var samples [imageFingerprintSamples][3]uint8
 	if img == nil || img.Bounds().Empty() {
-		return 0, 0, 0, 0, false
+		return samples, false
 	}
 	b := img.Bounds()
-	var samples [64]uint32
-	var sum uint32
-	var sumR, sumG, sumB uint32
-	for y := 0; y < 8; y++ {
-		py := b.Min.Y + (y*b.Dy()+b.Dy()/2)/8
+	for y := 0; y < imageFingerprintGrid; y++ {
+		py := b.Min.Y + (y*b.Dy()+b.Dy()/2)/imageFingerprintGrid
 		if py >= b.Max.Y {
 			py = b.Max.Y - 1
 		}
-		for x := 0; x < 8; x++ {
-			px := b.Min.X + (x*b.Dx()+b.Dx()/2)/8
+		for x := 0; x < imageFingerprintGrid; x++ {
+			px := b.Min.X + (x*b.Dx()+b.Dx()/2)/imageFingerprintGrid
 			if px >= b.Max.X {
 				px = b.Max.X - 1
 			}
 			r, g, bl, _ := img.At(px, py).RGBA()
-			luma := uint32((299*r + 587*g + 114*bl) / 1000)
-			samples[y*8+x] = luma
-			sum += luma
-			sumR += uint32(r)
-			sumG += uint32(g)
-			sumB += uint32(bl)
+			samples[y*imageFingerprintGrid+x] = [3]uint8{uint8(r / 257), uint8(g / 257), uint8(bl / 257)}
 		}
 	}
-	avg := sum / 64
-	var hash uint64
-	for i, v := range samples {
-		if v >= avg {
-			hash |= 1 << uint(i)
-		}
-	}
-	return hash, sumR / 64 / 257, sumG / 64 / 257, sumB / 64 / 257, true
+	return samples, true
 }
 
-func averageColorDistance(a, b imageFingerprint) uint32 {
-	return absDiff(a.avgR, b.avgR) + absDiff(a.avgG, b.avgG) + absDiff(a.avgB, b.avgB)
+func sampledImageDistance(a, b imageFingerprint) (mean uint32, max uint32) {
+	var total uint64
+	for i := 0; i < imageFingerprintSamples; i++ {
+		for c := 0; c < 3; c++ {
+			diff := absDiff(uint32(a.samples[i][c]), uint32(b.samples[i][c]))
+			total += uint64(diff)
+			if diff > max {
+				max = diff
+			}
+		}
+	}
+	return uint32(total / uint64(imageFingerprintSamples*3)), max
 }
 
 func absDiff(a, b uint32) uint32 {

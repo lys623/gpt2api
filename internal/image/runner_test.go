@@ -51,6 +51,16 @@ func TestMatchesReferenceImageContent(t *testing.T) {
 	}
 }
 
+func TestMatchesReferenceImageDoesNotDropEditedResult(t *testing.T) {
+	ref := testScenePNG(t, false)
+	edited := testScenePNG(t, true)
+
+	fps := referenceImageFingerprints([]ReferenceImage{{Data: ref, FileName: "ref.png"}})
+	if matchesReferenceImage(edited, fps) {
+		t.Fatal("edited generated image was classified as uploaded reference content")
+	}
+}
+
 func TestTaskErrorDetailKeepsUpstreamMessage(t *testing.T) {
 	got := taskErrorDetail(ErrUpstreamRejected, "非常抱歉，该提示可能违反了关于与第三方内容相似性的防护限制。")
 	want := "upstream_rejected: 非常抱歉，该提示可能违反了关于与第三方内容相似性的防护限制。"
@@ -77,6 +87,32 @@ func imageNewRGBA(w, h int, c color.RGBA) *stdimage.RGBA {
 		}
 	}
 	return img
+}
+
+func testScenePNG(t *testing.T, withAddedSubject bool) []byte {
+	t.Helper()
+	img := imageNewRGBA(96, 96, color.RGBA{R: 225, G: 226, B: 232, A: 255})
+	fillRect(img, 14, 26, 30, 78, color.RGBA{R: 32, G: 45, B: 70, A: 255})
+	fillRect(img, 62, 24, 80, 78, color.RGBA{R: 36, G: 48, B: 74, A: 255})
+	fillRect(img, 18, 16, 32, 30, color.RGBA{R: 80, G: 50, B: 35, A: 255})
+	fillRect(img, 62, 14, 82, 30, color.RGBA{R: 110, G: 72, B: 48, A: 255})
+	if withAddedSubject {
+		fillRect(img, 40, 40, 58, 82, color.RGBA{R: 244, G: 174, B: 192, A: 255})
+		fillRect(img, 39, 30, 59, 48, color.RGBA{R: 98, G: 64, B: 45, A: 255})
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("png encode: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func fillRect(img *stdimage.RGBA, x0, y0, x1, y1 int, c color.RGBA) {
+	for y := y0; y < y1; y++ {
+		for x := x0; x < x1; x++ {
+			img.SetRGBA(x, y, c)
+		}
+	}
 }
 
 func TestTruncateIsRuneSafe(t *testing.T) {
