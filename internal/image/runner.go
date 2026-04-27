@@ -1,13 +1,10 @@
 package image
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
-	stdimage "image"
 	"strings"
 	"sync"
 	"time"
@@ -349,7 +346,6 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 	// 三步串行各自最多耗时 30s 上下,叠加重试时单张图最坏 ≈ 3*(30s+5s) = 105s。
 	// 给 180s 留一点余量;如果还是超时,说明根本不是瞬时问题,fail-fast 也合理。
 	var refs []*chatgpt.UploadedFile
-	refFingerprints := referenceImageFingerprints(opt.References)
 	if len(opt.References) > 0 {
 		for idx, r0 := range opt.References {
 			upCtx, cancel := context.WithTimeout(ctx, 180*time.Second)
@@ -620,7 +616,6 @@ afterSSE:
 	var keptRefs []string
 	var signedURLs []string
 	var contentTypes []string
-	droppedReferenceContent := 0
 	for _, ref := range fileRefs {
 		url, err := cli.ImageDownloadURL(ctx, convID, ref)
 		if err != nil {
@@ -629,34 +624,11 @@ afterSSE:
 			continue
 		}
 		contentType := "image/png"
-		if len(refFingerprints) > 0 {
-			data, ct, err := cli.FetchImage(ctx, url, 16*1024*1024)
-			if err != nil {
-				logger.L().Warn("image runner reference-content validation fetch failed",
-					zap.String("task_id", opt.TaskID),
-					zap.String("ref", ref),
-					zap.Error(err))
-			} else {
-				if ct != "" {
-					contentType = ct
-				}
-				if matchesReferenceImage(data, refFingerprints) {
-					droppedReferenceContent++
-					logger.L().Warn("image runner dropped candidate matching uploaded reference image",
-						zap.String("task_id", opt.TaskID),
-						zap.String("ref", ref))
-					continue
-				}
-			}
-		}
 		keptRefs = append(keptRefs, ref)
 		signedURLs = append(signedURLs, url)
 		contentTypes = append(contentTypes, contentType)
 	}
 	if len(signedURLs) == 0 {
-		if droppedReferenceContent > 0 {
-			return false, ErrInvalidResponse, errors.New("only uploaded reference image content was produced")
-		}
 		return false, ErrDownload, errors.New("all download urls failed")
 	}
 
@@ -723,108 +695,6 @@ func sedimentOnlyMinWait(refSet map[string]struct{}) time.Duration {
 		return 0
 	}
 	return 15 * time.Second
-}
-
-type imageFingerprint struct {
-	rawSHA256 [32]byte
-	width     int
-	height    int
-	samples   [imageFingerprintSamples][3]uint8
-	hasSample bool
-}
-
-const imageFingerprintGrid = 32
-const imageFingerprintSamples = imageFingerprintGrid * imageFingerprintGrid
-
-func referenceImageFingerprints(refs []ReferenceImage) []imageFingerprint {
-	out := make([]imageFingerprint, 0, len(refs))
-	for _, ref := range refs {
-		if len(ref.Data) == 0 {
-			continue
-		}
-		out = append(out, fingerprintImageBytes(ref.Data))
-	}
-	return out
-}
-
-func fingerprintImageBytes(data []byte) imageFingerprint {
-	fp := imageFingerprint{rawSHA256: sha256.Sum256(data)}
-	img, _, err := stdimage.Decode(bytes.NewReader(data))
-	if err != nil {
-		return fp
-	}
-	b := img.Bounds()
-	fp.width = b.Dx()
-	fp.height = b.Dy()
-	fp.samples, fp.hasSample = sampledImageColors(img)
-	return fp
-}
-
-func matchesReferenceImage(data []byte, refs []imageFingerprint) bool {
-	if len(data) == 0 || len(refs) == 0 {
-		return false
-	}
-	candidate := fingerprintImageBytes(data)
-	for _, ref := range refs {
-		if candidate.rawSHA256 == ref.rawSHA256 {
-			return true
-		}
-		if !candidate.hasSample || !ref.hasSample {
-			continue
-		}
-		if candidate.width != ref.width || candidate.height != ref.height {
-			continue
-		}
-		meanDiff, maxDiff := sampledImageDistance(candidate, ref)
-		if meanDiff <= 2 && maxDiff <= 8 {
-			return true
-		}
-	}
-	return false
-}
-
-func sampledImageColors(img stdimage.Image) ([imageFingerprintSamples][3]uint8, bool) {
-	var samples [imageFingerprintSamples][3]uint8
-	if img == nil || img.Bounds().Empty() {
-		return samples, false
-	}
-	b := img.Bounds()
-	for y := 0; y < imageFingerprintGrid; y++ {
-		py := b.Min.Y + (y*b.Dy()+b.Dy()/2)/imageFingerprintGrid
-		if py >= b.Max.Y {
-			py = b.Max.Y - 1
-		}
-		for x := 0; x < imageFingerprintGrid; x++ {
-			px := b.Min.X + (x*b.Dx()+b.Dx()/2)/imageFingerprintGrid
-			if px >= b.Max.X {
-				px = b.Max.X - 1
-			}
-			r, g, bl, _ := img.At(px, py).RGBA()
-			samples[y*imageFingerprintGrid+x] = [3]uint8{uint8(r / 257), uint8(g / 257), uint8(bl / 257)}
-		}
-	}
-	return samples, true
-}
-
-func sampledImageDistance(a, b imageFingerprint) (mean uint32, max uint32) {
-	var total uint64
-	for i := 0; i < imageFingerprintSamples; i++ {
-		for c := 0; c < 3; c++ {
-			diff := absDiff(uint32(a.samples[i][c]), uint32(b.samples[i][c]))
-			total += uint64(diff)
-			if diff > max {
-				max = diff
-			}
-		}
-	}
-	return uint32(total / uint64(imageFingerprintSamples*3)), max
-}
-
-func absDiff(a, b uint32) uint32 {
-	if a > b {
-		return a - b
-	}
-	return b - a
 }
 
 // classifyUpstream 把上游错误转成内部 error code。
