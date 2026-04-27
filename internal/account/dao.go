@@ -148,6 +148,48 @@ func (d *DAO) ListDispatchable(ctx context.Context, limit int) ([]*Account, erro
 	return rows, err
 }
 
+// DispatchableDiagnostics 返回调度 SQL 过滤层面的汇总,用于 no_available_account 排查。
+type DispatchableDiagnostics struct {
+	ActiveAccounts  int `db:"active_accounts"`
+	StatusEligible  int `db:"status_eligible"`
+	StatusBlocked   int `db:"status_blocked"`
+	CooldownBlocked int `db:"cooldown_blocked"`
+	TokenExpired    int `db:"token_expired"`
+	Dispatchable    int `db:"dispatchable"`
+}
+
+func (d *DAO) DispatchableDiagnostics(ctx context.Context) (*DispatchableDiagnostics, error) {
+	now := time.Now()
+	var out DispatchableDiagnostics
+	err := d.db.GetContext(ctx, &out,
+		`SELECT
+           COUNT(*) AS active_accounts,
+           COALESCE(SUM(CASE WHEN status IN ('healthy', 'warned') THEN 1 ELSE 0 END), 0) AS status_eligible,
+           COALESCE(SUM(CASE WHEN status NOT IN ('healthy', 'warned') THEN 1 ELSE 0 END), 0) AS status_blocked,
+           COALESCE(SUM(CASE
+             WHEN status IN ('healthy', 'warned')
+              AND cooldown_until IS NOT NULL
+              AND cooldown_until > ?
+             THEN 1 ELSE 0 END), 0) AS cooldown_blocked,
+           COALESCE(SUM(CASE
+             WHEN status IN ('healthy', 'warned')
+              AND (cooldown_until IS NULL OR cooldown_until <= ?)
+              AND token_expires_at IS NOT NULL
+              AND token_expires_at <= ?
+             THEN 1 ELSE 0 END), 0) AS token_expired,
+           COALESCE(SUM(CASE
+             WHEN status IN ('healthy', 'warned')
+              AND (cooldown_until IS NULL OR cooldown_until <= ?)
+              AND (token_expires_at IS NULL OR token_expires_at > ?)
+             THEN 1 ELSE 0 END), 0) AS dispatchable
+         FROM oai_accounts
+         WHERE deleted_at IS NULL`, now, now, now, now, now)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // ListNeedRefresh 返回需要预刷新的账号(AT 将在 aheadSec 秒内过期)。
 // 按 token_expires_at 升序,最快过期的先刷。
 func (d *DAO) ListNeedRefresh(ctx context.Context, aheadSec int, limit int) ([]*Account, error) {
@@ -167,10 +209,11 @@ func (d *DAO) ListNeedRefresh(ctx context.Context, aheadSec int, limit int) ([]*
 }
 
 // ListNeedProbeQuota 返回需要探测图片额度的账号。命中以下任一条件即纳入:
-//   (a) 从未探测过(image_quota_updated_at IS NULL);
-//   (b) 上次探测超过 minIntervalSec 秒(常规轮询);
-//   (c) **剩余额度=0 且已过 reset_at**:这种"归零等重置"的账号要第一时间补探,
-//       不受 minIntervalSec 限制,避免 5 小时轮询间隔导致的额度恢复滞后显示。
+//
+//	(a) 从未探测过(image_quota_updated_at IS NULL);
+//	(b) 上次探测超过 minIntervalSec 秒(常规轮询);
+//	(c) **剩余额度=0 且已过 reset_at**:这种"归零等重置"的账号要第一时间补探,
+//	    不受 minIntervalSec 限制,避免 5 小时轮询间隔导致的额度恢复滞后显示。
 func (d *DAO) ListNeedProbeQuota(ctx context.Context, minIntervalSec int, limit int) ([]*Account, error) {
 	rows := make([]*Account, 0, limit)
 	threshold := time.Now().Add(-time.Duration(minIntervalSec) * time.Second)

@@ -1,11 +1,11 @@
 // Package scheduler 负责 chatgpt.com 账号的并发安全调度。
 //
 // 核心规则(参考 RISK_AND_SAAS.md):
-//   1. 一号一锁:同账号同时只允许 1 个请求占用(Redis SETNX)。
-//   2. 最小间隔:同账号相邻请求 >= min_interval_sec。
-//   3. 每日配额:today_used_count < daily_image_quota * daily_usage_ratio。
-//   4. 状态机:healthy -> warned -> throttled -> suspicious -> dead,冷却过期自动恢复。
-//   5. 选择策略:status=healthy + cooldown 到期 + last_used_at 最早的优先。
+//  1. 一号一锁:同账号同时只允许 1 个请求占用(Redis SETNX)。
+//  2. 最小间隔:同账号相邻请求 >= min_interval_sec。
+//  3. 每日配额:today_used_count < daily_image_quota * daily_usage_ratio。
+//  4. 状态机:healthy -> warned -> throttled -> suspicious -> dead,冷却过期自动恢复。
+//  5. 选择策略:status=healthy + cooldown 到期 + last_used_at 最早的优先。
 package scheduler
 
 import (
@@ -27,6 +27,43 @@ import (
 
 // ErrNoAvailable 没有任何账号可用。
 var ErrNoAvailable = errors.New("scheduler: no available account")
+
+type noAvailableError struct {
+	stats dispatchSkipStats
+}
+
+func (e *noAvailableError) Error() string { return ErrNoAvailable.Error() }
+func (e *noAvailableError) Unwrap() error { return ErrNoAvailable }
+
+type dispatchSkipStats struct {
+	CandidateCount  int
+	SkippedInterval int
+	SkippedQuota    int
+	SkippedLockBusy int
+	SkippedLockErr  int
+	Samples         []dispatchSkipSample
+}
+
+type dispatchSkipSample struct {
+	AccountID       uint64 `json:"account_id"`
+	Status          string `json:"status,omitempty"`
+	Reason          string `json:"reason"`
+	LastUsedAgoSec  int64  `json:"last_used_ago_sec,omitempty"`
+	MinIntervalSec  int    `json:"min_interval_sec,omitempty"`
+	UsedToday       int    `json:"used_today,omitempty"`
+	DailyQuota      int    `json:"daily_quota,omitempty"`
+	DailyLimit      int    `json:"daily_limit,omitempty"`
+	DailyUsageRatio string `json:"daily_usage_ratio,omitempty"`
+	Error           string `json:"error,omitempty"`
+}
+
+func (s *dispatchSkipStats) addSample(sample dispatchSkipSample) {
+	const maxSamples = 12
+	if len(s.Samples) >= maxSamples {
+		return
+	}
+	s.Samples = append(s.Samples, sample)
+}
 
 // Lease 代表一次账号占用的租约。
 type Lease struct {
@@ -155,6 +192,7 @@ func (s *Scheduler) Dispatch(ctx context.Context, modelType string) (*Lease, err
 
 	attempt := 0
 	start := time.Now()
+	var lastNoAvailable *noAvailableError
 
 	for {
 		attempt++
@@ -171,9 +209,14 @@ func (s *Scheduler) Dispatch(ctx context.Context, modelType string) (*Lease, err
 		if !errors.Is(err, ErrNoAvailable) {
 			return nil, err
 		}
+		var noAvail *noAvailableError
+		if errors.As(err, &noAvail) {
+			lastNoAvailable = noAvail
+		}
 
 		// 所有候选都忙或不就绪:排队等待。
 		if !time.Now().Before(deadline) {
+			s.logNoAvailable(ctx, modelType, attempt, start, lastNoAvailable)
 			return nil, ErrNoAvailable
 		}
 		wait := backoff
@@ -181,6 +224,7 @@ func (s *Scheduler) Dispatch(ctx context.Context, modelType string) (*Lease, err
 			wait = remain
 		}
 		if wait <= 0 {
+			s.logNoAvailable(ctx, modelType, attempt, start, lastNoAvailable)
 			return nil, ErrNoAvailable
 		}
 		select {
@@ -205,15 +249,25 @@ func (s *Scheduler) tryDispatchOnce(ctx context.Context, modelType string) (*Lea
 	if err != nil {
 		return nil, fmt.Errorf("scheduler list: %w", err)
 	}
+	stats := dispatchSkipStats{CandidateCount: len(candidates)}
 	if len(candidates) == 0 {
-		return nil, ErrNoAvailable
+		return nil, &noAvailableError{stats: stats}
 	}
 
 	now := time.Now()
 	minInterval := time.Duration(s.cfg.MinIntervalSec) * time.Second
+	dailyRatio := s.dailyUsageRatio()
 
 	for _, acc := range candidates {
 		if acc.LastUsedAt.Valid && now.Sub(acc.LastUsedAt.Time) < minInterval {
+			stats.SkippedInterval++
+			stats.addSample(dispatchSkipSample{
+				AccountID:      acc.ID,
+				Status:         acc.Status,
+				Reason:         "min_interval",
+				LastUsedAgoSec: int64(now.Sub(acc.LastUsedAt.Time) / time.Second),
+				MinIntervalSec: s.cfg.MinIntervalSec,
+			})
 			continue
 		}
 		if acc.DailyImageQuota > 0 {
@@ -221,8 +275,18 @@ func (s *Scheduler) tryDispatchOnce(ctx context.Context, modelType string) (*Lea
 			if acc.TodayUsedDate.Valid && sameDay(acc.TodayUsedDate.Time, now) {
 				usedToday = acc.TodayUsedCount
 			}
-			max := int(float64(acc.DailyImageQuota) * s.dailyUsageRatio())
+			max := int(float64(acc.DailyImageQuota) * dailyRatio)
 			if max > 0 && usedToday >= max {
+				stats.SkippedQuota++
+				stats.addSample(dispatchSkipSample{
+					AccountID:       acc.ID,
+					Status:          acc.Status,
+					Reason:          "daily_quota",
+					UsedToday:       usedToday,
+					DailyQuota:      acc.DailyImageQuota,
+					DailyLimit:      max,
+					DailyUsageRatio: fmt.Sprintf("%.4f", dailyRatio),
+				})
 				continue
 			}
 		}
@@ -232,12 +296,60 @@ func (s *Scheduler) tryDispatchOnce(ctx context.Context, modelType string) (*Lea
 		}
 		if errors.Is(err, lock.ErrNotAcquired) {
 			// 被别的请求占用,下一个候选
+			stats.SkippedLockBusy++
+			stats.addSample(dispatchSkipSample{
+				AccountID: acc.ID,
+				Status:    acc.Status,
+				Reason:    "lock_busy",
+			})
 			continue
 		}
+		stats.SkippedLockErr++
+		stats.addSample(dispatchSkipSample{
+			AccountID: acc.ID,
+			Status:    acc.Status,
+			Reason:    "lock_error",
+			Error:     err.Error(),
+		})
 		logger.L().Warn("scheduler tryLock error",
 			zap.Uint64("account_id", acc.ID), zap.Error(err))
 	}
-	return nil, ErrNoAvailable
+	return nil, &noAvailableError{stats: stats}
+}
+
+func (s *Scheduler) logNoAvailable(ctx context.Context, modelType string, attempt int, start time.Time, last *noAvailableError) {
+	fields := []zap.Field{
+		zap.String("model_type", modelType),
+		zap.Int("attempt", attempt),
+		zap.Duration("waited", time.Since(start)),
+		zap.Int("queue_wait_sec", int(s.queueWait()/time.Second)),
+		zap.Int("min_interval_sec", s.cfg.MinIntervalSec),
+		zap.Float64("daily_usage_ratio", s.dailyUsageRatio()),
+		zap.Int("lock_ttl_sec", s.cfg.LockTTLSec),
+	}
+	if last != nil {
+		fields = append(fields,
+			zap.Int("candidate_count", last.stats.CandidateCount),
+			zap.Int("skipped_min_interval", last.stats.SkippedInterval),
+			zap.Int("skipped_daily_quota", last.stats.SkippedQuota),
+			zap.Int("skipped_lock_busy", last.stats.SkippedLockBusy),
+			zap.Int("skipped_lock_error", last.stats.SkippedLockErr),
+			zap.Any("skip_samples", last.stats.Samples),
+		)
+	}
+	if dbStats, err := s.accSvc.DAO().DispatchableDiagnostics(ctx); err == nil && dbStats != nil {
+		fields = append(fields,
+			zap.Int("db_active_accounts", dbStats.ActiveAccounts),
+			zap.Int("db_status_eligible", dbStats.StatusEligible),
+			zap.Int("db_status_blocked", dbStats.StatusBlocked),
+			zap.Int("db_cooldown_blocked", dbStats.CooldownBlocked),
+			zap.Int("db_token_expired", dbStats.TokenExpired),
+			zap.Int("db_dispatchable", dbStats.Dispatchable),
+		)
+	} else if err != nil {
+		fields = append(fields, zap.Error(err))
+	}
+	logger.L().Warn("scheduler no available account", fields...)
 }
 
 func (s *Scheduler) tryLock(ctx context.Context, acc *account.Account) (*Lease, error) {
