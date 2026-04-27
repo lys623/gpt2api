@@ -100,12 +100,25 @@ func TestAssistantFailureCode(t *testing.T) {
 func TestSkippedMainlineIsNotClassifiedAsRejected(t *testing.T) {
 	err := &chatgpt.UpstreamError{Status: 400, Message: "f/conversation failed", Body: `{"skipped_mainline":true}`}
 	var r Runner
-	if got := r.classifyUpstream(err); got != ErrUpstream {
-		t.Fatalf("classifyUpstream() = %q, want %q", got, ErrUpstream)
+	if got := r.classifyUpstream(err); got != ErrNetworkTransient {
+		t.Fatalf("classifyUpstream() = %q, want %q", got, ErrNetworkTransient)
 	}
 
 	msg := runnerErrorMessage(err)
 	if msg == "" || msg == `{"skipped_mainline":true}` {
 		t.Fatalf("runnerErrorMessage() = %q, want friendly message", msg)
+	}
+}
+
+func TestSkippedMainlineDetectionIsRobust(t *testing.T) {
+	bodies := []string{
+		`{"skipped_mainline":true}`,
+		"{\n  \"skipped_mainline\" : true\n}",
+		`{"error":{"skipped_mainline":true}}`,
+	}
+	for _, body := range bodies {
+		if !upstreamBodySkippedMainline(body) {
+			t.Fatalf("upstreamBodySkippedMainline(%q) = false, want true", body)
+		}
 	}
 }

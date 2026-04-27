@@ -431,7 +431,12 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 					zap.String("conv_id", convID))
 				goto afterSSE
 			}
-			return false, ErrInvalidResponse, errors.New("upstream skipped mainline without conversation_id")
+			logger.L().Warn("image runner f/conversation skipped mainline without conversation_id",
+				zap.String("task_id", opt.TaskID),
+				zap.Uint64("account_id", lease.Account.ID),
+				zap.Int("status", ue.Status),
+				zap.String("body", truncate(ue.Body, 500)))
+			return false, ErrNetworkTransient, ue
 		}
 		code := r.classifyUpstream(err)
 		if code == ErrRateLimited {
@@ -814,6 +819,9 @@ func (r *Runner) classifyUpstream(err error) string {
 	}
 	var ue *chatgpt.UpstreamError
 	if errors.As(err, &ue) {
+		if upstreamBodySkippedMainline(ue.Body) {
+			return ErrNetworkTransient
+		}
 		if ue.IsRateLimited() {
 			return ErrRateLimited
 		}
@@ -889,6 +897,9 @@ func upstreamBodySkippedMainline(body string) bool {
 	if body == "" {
 		return false
 	}
+	if bodyContainsSkippedMainline(body) {
+		return true
+	}
 	var obj map[string]interface{}
 	if err := json.Unmarshal([]byte(body), &obj); err != nil {
 		return false
@@ -901,7 +912,20 @@ func skippedMainline(obj map[string]interface{}) bool {
 		return false
 	}
 	v, _ := obj["skipped_mainline"].(bool)
-	return v
+	if v {
+		return true
+	}
+	for _, key := range []string{"error", "detail"} {
+		if nested, _ := obj[key].(map[string]interface{}); skippedMainline(nested) {
+			return true
+		}
+	}
+	return false
+}
+
+func bodyContainsSkippedMainline(body string) bool {
+	compact := strings.NewReplacer(" ", "", "\n", "", "\r", "", "\t", "").Replace(strings.ToLower(body))
+	return strings.Contains(compact, `"skipped_mainline":true`)
 }
 
 func stringField(m map[string]interface{}, key string) string {

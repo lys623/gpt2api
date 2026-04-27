@@ -770,6 +770,8 @@ func localizeImageErr(code, raw string) string {
 		zh = "Upstream rate limited, please try again later"
 	case image.ErrUpstreamRejected:
 		zh = "Upstream rejected the image generation request"
+	case image.ErrNetworkTransient:
+		zh = "Transient upstream network error, please retry"
 	case image.ErrUnknown, "":
 		zh = "Image generation failed"
 	case "upstream_error":
