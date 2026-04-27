@@ -663,18 +663,14 @@ func referenceUploadFileIDSet(refs []*chatgpt.UploadedFile) map[string]struct{} 
 	return out
 }
 
-// filterOutReferenceFileIDs 从合并后的 fileRefs 中移除与「用户参考上传」同 id 的 file-service 条目,
-// 保留 sediment(sed:...) —— 参考图只走 file-service,不会以 sed: 形式出现在同一列表里和生成图冲突。
+// filterOutReferenceFileIDs 从合并后的 fileRefs 中移除与「用户参考上传」同 id 的条目。
+// 某些上游响应会把附件以 sed: 形态暴露,因此先 normalize 再比对。
 func filterOutReferenceFileIDs(fileRefs []string, refSet map[string]struct{}) []string {
 	if len(refSet) == 0 {
 		return fileRefs
 	}
 	out := make([]string, 0, len(fileRefs))
 	for _, ref := range fileRefs {
-		if strings.HasPrefix(ref, "sed:") {
-			out = append(out, ref)
-			continue
-		}
 		if _, skip := refSet[normalizeImageFileRef(ref)]; skip {
 			continue
 		}

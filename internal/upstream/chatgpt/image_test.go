@@ -374,6 +374,124 @@ func TestPollConversationForImagesCapturesAssistantAssetPointers(t *testing.T) {
 	}
 }
 
+func TestPollConversationForImagesIgnoresUserAttachmentPointers(t *testing.T) {
+	calls := 0
+	conversations := []map[string]interface{}{
+		{
+			"mapping": map[string]interface{}{
+				"user_ref": imageUserMappingNode(1, []interface{}{
+					map[string]interface{}{"asset_pointer": "sediment://file_uploaded_ref"},
+					map[string]interface{}{"asset_pointer": "file-service://file_uploaded_ref"},
+				}),
+			},
+		},
+		{
+			"mapping": map[string]interface{}{
+				"user_ref": imageUserMappingNode(1, []interface{}{
+					map[string]interface{}{"asset_pointer": "sediment://file_uploaded_ref"},
+					map[string]interface{}{"asset_pointer": "file-service://file_uploaded_ref"},
+				}),
+				"tool_result": imageToolMappingNode(2, []interface{}{
+					map[string]interface{}{"asset_pointer": "sediment://file_generated_result"},
+				}),
+			},
+		},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		idx := calls
+		if idx >= len(conversations) {
+			idx = len(conversations) - 1
+		}
+		calls++
+		_ = json.NewEncoder(w).Encode(conversations[idx])
+	}))
+	defer srv.Close()
+
+	c := &Client{opts: Options{BaseURL: srv.URL}, hc: srv.Client()}
+	status, fids, sids, assistantText := c.PollConversationForImages(
+		context.Background(),
+		"conv_image",
+		PollOpts{
+			ExpectedN:           1,
+			ExcludeFileIDs:      map[string]struct{}{"file_uploaded_ref": {}},
+			MaxWait:             time.Second,
+			Interval:            10 * time.Millisecond,
+			SedimentOnlyMinWait: 10 * time.Millisecond,
+		},
+	)
+
+	if status != PollStatusSuccess {
+		t.Fatalf("status = %q, want %q (text=%q)", status, PollStatusSuccess, assistantText)
+	}
+	if len(fids) != 0 {
+		t.Fatalf("fids = %#v, want empty", fids)
+	}
+	if len(sids) != 1 || sids[0] != "file_generated_result" {
+		t.Fatalf("sids = %#v, want generated sediment result", sids)
+	}
+	if calls < 2 {
+		t.Fatalf("calls = %d, want user attachment ignored until generated result", calls)
+	}
+}
+
+func TestPollConversationForImagesExcludesUploadedSedimentIDs(t *testing.T) {
+	calls := 0
+	conversations := []map[string]interface{}{
+		{
+			"mapping": map[string]interface{}{
+				"tool_ref_sed": imageToolMappingNode(1, []interface{}{
+					map[string]interface{}{"asset_pointer": "sediment://file_uploaded_ref"},
+				}),
+			},
+		},
+		{
+			"mapping": map[string]interface{}{
+				"tool_ref_sed": imageToolMappingNode(1, []interface{}{
+					map[string]interface{}{"asset_pointer": "sediment://file_uploaded_ref"},
+				}),
+				"tool_result": imageToolMappingNode(2, []interface{}{
+					map[string]interface{}{"asset_pointer": "sediment://file_generated_result"},
+				}),
+			},
+		},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		idx := calls
+		if idx >= len(conversations) {
+			idx = len(conversations) - 1
+		}
+		calls++
+		_ = json.NewEncoder(w).Encode(conversations[idx])
+	}))
+	defer srv.Close()
+
+	c := &Client{opts: Options{BaseURL: srv.URL}, hc: srv.Client()}
+	status, fids, sids, assistantText := c.PollConversationForImages(
+		context.Background(),
+		"conv_image",
+		PollOpts{
+			ExpectedN:           1,
+			ExcludeFileIDs:      map[string]struct{}{"file_uploaded_ref": {}},
+			MaxWait:             time.Second,
+			Interval:            10 * time.Millisecond,
+			SedimentOnlyMinWait: 10 * time.Millisecond,
+		},
+	)
+
+	if status != PollStatusSuccess {
+		t.Fatalf("status = %q, want %q (text=%q)", status, PollStatusSuccess, assistantText)
+	}
+	if len(fids) != 0 {
+		t.Fatalf("fids = %#v, want empty", fids)
+	}
+	if len(sids) != 1 || sids[0] != "file_generated_result" {
+		t.Fatalf("sids = %#v, want generated sediment result", sids)
+	}
+	if calls < 2 {
+		t.Fatalf("calls = %d, want uploaded sediment excluded until generated result", calls)
+	}
+}
+
 func TestPollConversationForImagesWaitsOnSedimentOnlyWhenConfigured(t *testing.T) {
 	calls := 0
 	conversations := []map[string]interface{}{
@@ -435,6 +553,19 @@ func imageToolMappingNode(createTime float64, parts []interface{}) map[string]in
 			"author":      map[string]interface{}{"role": "tool", "name": "image_gen"},
 			"recipient":   "image_gen",
 			"metadata":    map[string]interface{}{"async_task_type": "image_gen"},
+			"content": map[string]interface{}{
+				"content_type": "multimodal_text",
+				"parts":        parts,
+			},
+		},
+	}
+}
+
+func imageUserMappingNode(createTime float64, parts []interface{}) map[string]interface{} {
+	return map[string]interface{}{
+		"message": map[string]interface{}{
+			"create_time": createTime,
+			"author":      map[string]interface{}{"role": "user"},
 			"content": map[string]interface{}{
 				"content_type": "multimodal_text",
 				"parts":        parts,

@@ -26,7 +26,6 @@ func TestFilterOutReferenceFileIDs(t *testing.T) {
 
 	want := []string{
 		"file_generated_result",
-		"sed:file_uploaded_ref",
 		"sed:file_generated_sediment",
 	}
 	if !reflect.DeepEqual(got, want) {

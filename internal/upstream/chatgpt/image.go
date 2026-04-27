@@ -510,8 +510,8 @@ func (c *Client) GetConversationMapping(ctx context.Context, convID string) (map
 // ExtractImageToolMsgs 从 conversation.mapping 里提取所有图片引用消息。
 //
 // ChatGPT 的 IMG2 返回结构会变:有时结果在 role=tool + async_task_type=image_gen,
-// 有时会落到 assistant 消息或更深的 asset_pointer 字段里。这里递归扫描整条 message,
-// 调用方再用 ExcludeFileIDs 过滤掉用户上传的参考图。
+// 有时会落到 assistant 消息或更深的 asset_pointer 字段里。这里递归扫描非 user
+// message,调用方再用 ExcludeFileIDs 过滤掉用户上传的参考图。
 func ExtractImageToolMsgs(mapping map[string]interface{}) []ImageToolMsg {
 	out := make([]ImageToolMsg, 0, 4)
 	for mid, raw := range mapping {
@@ -524,6 +524,9 @@ func ExtractImageToolMsgs(mapping map[string]interface{}) []ImageToolMsg {
 			continue
 		}
 		author, _ := msg["author"].(map[string]interface{})
+		if role, _ := author["role"].(string); role == "user" {
+			continue
+		}
 		meta, _ := msg["metadata"].(map[string]interface{})
 
 		fileIDs, sedimentIDs := collectImageAssetRefs(msg)
@@ -647,7 +650,7 @@ func ExtractAssistantTextMsgs(mapping map[string]interface{}) []string {
 //   - 全程没拿到图才是 timeout
 type PollOpts struct {
 	BaselineToolIDs     map[string]struct{} // 发送前已存在的 tool 消息 id,本次回合只看新增
-	ExcludeFileIDs      map[string]struct{} // 需要排除的 file-service id,通常是用户上传的参考图
+	ExcludeFileIDs      map[string]struct{} // 需要排除的 file-service/sediment id,通常是用户上传的参考图
 	ExpectedN           int                 // 期望返回的图片张数,够了立即短路,默认 1
 	MaxWait             time.Duration       // 总超时,默认 300s(上游渲染慢时兜底补齐)
 	Interval            time.Duration       // 轮询间隔,默认 3s
@@ -776,6 +779,9 @@ func (c *Client) PollConversationForImages(ctx context.Context, convID string, o
 				}
 			}
 			for _, s := range m.SedimentIDs {
+				if shouldExcludeFileRef(s, opt.ExcludeFileIDs) {
+					continue
+				}
 				if _, ok := seenSed[s]; !ok {
 					seenSed[s] = struct{}{}
 					allSed = append(allSed, s)
