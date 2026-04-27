@@ -141,6 +141,92 @@ func TestPollConversationForImagesReturns429Diagnostics(t *testing.T) {
 	}
 }
 
+func TestPollConversationForImagesIgnoresSkippedMainlineAssistantTextUntilResult(t *testing.T) {
+	calls := 0
+	conversations := []map[string]interface{}{
+		{
+			"mapping": map[string]interface{}{
+				"assistant": map[string]interface{}{
+					"message": map[string]interface{}{
+						"create_time": float64(1),
+						"author":      map[string]interface{}{"role": "assistant"},
+						"content": map[string]interface{}{
+							"content_type": "text",
+							"parts":        []interface{}{`{"skipped_mainline":true}`},
+						},
+					},
+				},
+			},
+		},
+		{
+			"mapping": map[string]interface{}{
+				"tool_result": imageToolMappingNode(2, []interface{}{
+					map[string]interface{}{"asset_pointer": "file-service://file_generated_result"},
+				}),
+			},
+		},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		idx := calls
+		if idx >= len(conversations) {
+			idx = len(conversations) - 1
+		}
+		calls++
+		_ = json.NewEncoder(w).Encode(conversations[idx])
+	}))
+	defer srv.Close()
+
+	c := &Client{opts: Options{BaseURL: srv.URL}, hc: srv.Client()}
+	status, fids, sids, assistantText := c.PollConversationForImages(
+		context.Background(),
+		"conv_image",
+		PollOpts{ExpectedN: 1, MaxWait: time.Second, Interval: time.Millisecond},
+	)
+
+	if status != PollStatusSuccess {
+		t.Fatalf("status = %q, want %q (text=%q)", status, PollStatusSuccess, assistantText)
+	}
+	if len(fids) != 1 || fids[0] != "file_generated_result" {
+		t.Fatalf("fids = %#v, want generated result", fids)
+	}
+	if len(sids) != 0 {
+		t.Fatalf("sids = %#v, want empty", sids)
+	}
+	if pollBodySkippedMainline(assistantText) {
+		t.Fatalf("assistantText kept skipped_mainline payload: %q", assistantText)
+	}
+}
+
+func TestPollConversationForImagesTreatsSkippedMainlineErrorsAsTimeout(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"skipped_mainline":true}`))
+	}))
+	defer srv.Close()
+
+	c := &Client{opts: Options{BaseURL: srv.URL}, hc: srv.Client()}
+	status, fids, sids, assistantText := c.PollConversationForImages(
+		context.Background(),
+		"conv_skipped",
+		PollOpts{ExpectedN: 1, MaxWait: 25 * time.Millisecond, Interval: 5 * time.Millisecond},
+	)
+
+	if status != PollStatusTimeout {
+		t.Fatalf("status = %q, want %q (text=%q)", status, PollStatusTimeout, assistantText)
+	}
+	if len(fids) != 0 || len(sids) != 0 {
+		t.Fatalf("unexpected image refs: fids=%v sids=%v", fids, sids)
+	}
+	if calls == 0 {
+		t.Fatalf("expected at least one poll call")
+	}
+	if !strings.Contains(assistantText, "skipped_mainline") || strings.TrimSpace(assistantText) == `{"skipped_mainline":true}` {
+		t.Fatalf("assistantText = %q, want friendly skipped_mainline diagnostic", assistantText)
+	}
+}
+
 func TestPollConversationForImagesReturnsRejectedOnAssistantRefusal(t *testing.T) {
 	conversation := map[string]interface{}{
 		"mapping": map[string]interface{}{

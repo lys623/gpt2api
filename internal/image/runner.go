@@ -535,6 +535,7 @@ afterSSE:
 			MaxWait:             opt.PollMaxWait,
 			SedimentOnlyMinWait: sedimentOnlyMinWait(refSet),
 		}
+		pollStarted := time.Now()
 		status, fids, sids, assistantText := cli.PollConversationForImages(ctx, convID, pollOpt)
 		logger.L().Info("image runner poll done",
 			zap.String("task_id", opt.TaskID),
@@ -542,6 +543,8 @@ afterSSE:
 			zap.String("conv_id", convID),
 			zap.String("poll_status", string(status)),
 			zap.String("poll_text", truncate(assistantText, 500)),
+			zap.Duration("poll_elapsed", time.Since(pollStarted)),
+			zap.String("poll_context_err", errString(ctx.Err())),
 			zap.Int("expected_n", opt.N),
 			zap.Int("existing_refs", len(fileRefs)),
 			zap.Duration("poll_max_wait", opt.PollMaxWait),
@@ -968,6 +971,9 @@ func isImageRejectionMessage(s string) bool {
 }
 
 func assistantFailureCode(message, fallback string) string {
+	if bodyContainsSkippedMainline(message) {
+		return ErrPollTimeout
+	}
 	if isImageRejectionMessage(message) {
 		return ErrUpstreamRejected
 	}
@@ -981,6 +987,13 @@ func firstFilled(items ...string) string {
 		}
 	}
 	return ""
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // GenerateTaskID 生成对外 task_id。

@@ -675,27 +675,35 @@ func (c *Client) PollConversationForImages(ctx context.Context, convID string, o
 
 	// 累计全程看到的 fid/sid,循环外可用(超时兜底:有图就算成功)
 	var (
-		allFile        []string
-		allSed         []string
-		seenFile       = map[string]struct{}{}
-		seenSed        = map[string]struct{}{}
-		consecutive429 int
-		assistantText  string
-		sedOnlySince   time.Time
-		lastPollErr    string
-		pollAttempts   int
+		allFile              []string
+		allSed               []string
+		seenFile             = map[string]struct{}{}
+		seenSed              = map[string]struct{}{}
+		consecutive429       int
+		assistantText        string
+		sedOnlySince         time.Time
+		lastPollErr          string
+		pollAttempts         int
+		skippedMainlinePolls int
 	)
 
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
-			return PollStatusError, nil, nil, firstNonEmpty(assistantText, "image poll context canceled: "+ctx.Err().Error())
+			return PollStatusTimeout, nil, nil, pollFailureText(assistantText, lastPollErr, pollAttempts, skippedMainlinePolls, "image poll context canceled: "+ctx.Err().Error())
 		default:
 		}
 
 		mapping, err := c.getMappingRaw(ctx, convID)
 		pollAttempts++
 		if err != nil {
+			if ue, ok := err.(*UpstreamError); ok && pollBodySkippedMainline(ue.Body) {
+				skippedMainlinePolls++
+				consecutive429 = 0
+				lastPollErr = fmt.Sprintf("conversation poll returned skipped_mainline http=%d count=%d", ue.Status, skippedMainlinePolls)
+				sleep(ctx, opt.Interval)
+				continue
+			}
 			lastPollErr = pollErrorText(err)
 			if ue, ok := err.(*UpstreamError); ok && ue.Status == 429 {
 				consecutive429++
@@ -714,7 +722,15 @@ func (c *Client) PollConversationForImages(ctx context.Context, convID string, o
 		}
 		consecutive429 = 0
 		if texts := ExtractAssistantTextMsgs(mapping); len(texts) > 0 {
-			assistantText = texts[len(texts)-1]
+			for i := len(texts) - 1; i >= 0; i-- {
+				if pollBodySkippedMainline(texts[i]) {
+					skippedMainlinePolls++
+					lastPollErr = fmt.Sprintf("conversation mapping carried skipped_mainline assistant text count=%d", skippedMainlinePolls)
+					continue
+				}
+				assistantText = texts[i]
+				break
+			}
 		}
 
 		msgs := ExtractImageToolMsgs(mapping)
@@ -777,7 +793,20 @@ func (c *Client) PollConversationForImages(ctx context.Context, convID string, o
 	if len(allFile)+len(allSed) > 0 {
 		return PollStatusSuccess, allFile, allSed, assistantText
 	}
-	return PollStatusTimeout, nil, nil, firstNonEmpty(assistantText, lastPollErr)
+	return PollStatusTimeout, nil, nil, pollFailureText(assistantText, lastPollErr, pollAttempts, skippedMainlinePolls, "poll timeout without any image")
+}
+
+func pollFailureText(assistantText, lastPollErr string, attempts, skippedMainlinePolls int, fallback string) string {
+	if assistantText = strings.TrimSpace(assistantText); assistantText != "" && !pollBodySkippedMainline(assistantText) {
+		return assistantText
+	}
+	if skippedMainlinePolls > 0 {
+		return fmt.Sprintf("conversation poll saw skipped_mainline %d times in %d attempts, no image yet", skippedMainlinePolls, attempts)
+	}
+	if lastPollErr = strings.TrimSpace(lastPollErr); lastPollErr != "" {
+		return lastPollErr
+	}
+	return fallback
 }
 
 func pollErrorText(err error) string {
@@ -792,6 +821,37 @@ func pollErrorText(err error) string {
 		return fmt.Sprintf("conversation poll upstream http=%d message=%s", ue.Status, ue.Message)
 	}
 	return truncateStr(err.Error(), 500)
+}
+
+func pollBodySkippedMainline(body string) bool {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return false
+	}
+	compact := strings.NewReplacer(" ", "", "\n", "", "\r", "", "\t", "").Replace(strings.ToLower(body))
+	if strings.Contains(compact, `"skipped_mainline":true`) {
+		return true
+	}
+	var obj map[string]interface{}
+	if err := json.Unmarshal([]byte(body), &obj); err != nil {
+		return false
+	}
+	return pollObjectSkippedMainline(obj)
+}
+
+func pollObjectSkippedMainline(obj map[string]interface{}) bool {
+	if obj == nil {
+		return false
+	}
+	if v, _ := obj["skipped_mainline"].(bool); v {
+		return true
+	}
+	for _, key := range []string{"error", "detail"} {
+		if nested, _ := obj[key].(map[string]interface{}); pollObjectSkippedMainline(nested) {
+			return true
+		}
+	}
+	return false
 }
 
 func isTerminalImageRejectionText(s string) bool {
