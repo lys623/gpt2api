@@ -3,7 +3,7 @@
 // 核心规则(参考 RISK_AND_SAAS.md):
 //  1. 一号一锁:同账号同时只允许 1 个请求占用(Redis SETNX)。
 //  2. 最小间隔:同账号相邻请求 >= min_interval_sec。
-//  3. 每日配额:today_used_count < daily_image_quota * daily_usage_ratio。
+//  3. 每日配额:优先使用未超过 daily_usage_ratio 的账号,达到真实日上限才硬停。
 //  4. 状态机:healthy -> warned -> throttled -> suspicious -> dead,冷却过期自动恢复。
 //  5. 选择策略:status=healthy + cooldown 到期 + last_used_at 最早的优先。
 package scheduler
@@ -36,12 +36,13 @@ func (e *noAvailableError) Error() string { return ErrNoAvailable.Error() }
 func (e *noAvailableError) Unwrap() error { return ErrNoAvailable }
 
 type dispatchSkipStats struct {
-	CandidateCount  int
-	SkippedInterval int
-	SkippedQuota    int
-	SkippedLockBusy int
-	SkippedLockErr  int
-	Samples         []dispatchSkipSample
+	CandidateCount     int
+	SkippedInterval    int
+	SkippedQuota       int
+	DeprioritizedQuota int
+	SkippedLockBusy    int
+	SkippedLockErr     int
+	Samples            []dispatchSkipSample
 }
 
 type dispatchSkipSample struct {
@@ -52,6 +53,8 @@ type dispatchSkipSample struct {
 	MinIntervalSec  int    `json:"min_interval_sec,omitempty"`
 	UsedToday       int    `json:"used_today,omitempty"`
 	DailyQuota      int    `json:"daily_quota,omitempty"`
+	ConfiguredQuota int    `json:"configured_quota,omitempty"`
+	ImageQuotaTotal int    `json:"image_quota_total,omitempty"`
 	DailyLimit      int    `json:"daily_limit,omitempty"`
 	DailyUsageRatio string `json:"daily_usage_ratio,omitempty"`
 	Error           string `json:"error,omitempty"`
@@ -241,7 +244,7 @@ func (s *Scheduler) Dispatch(ctx context.Context, modelType string) (*Lease, err
 }
 
 // tryDispatchOnce 扫一遍 candidate,尝试为其中一个加锁;
-// 全部 candidate 都被锁 / 不满足 min_interval / 日配额时返回 ErrNoAvailable。
+// 全部 candidate 都被锁 / 不满足 min_interval / 真实日上限时返回 ErrNoAvailable。
 func (s *Scheduler) tryDispatchOnce(ctx context.Context, modelType string) (*Lease, error) {
 	limit := 30
 	dao := s.accSvc.DAO()
@@ -257,6 +260,8 @@ func (s *Scheduler) tryDispatchOnce(ctx context.Context, modelType string) (*Lea
 	now := time.Now()
 	minInterval := time.Duration(s.cfg.MinIntervalSec) * time.Second
 	dailyRatio := s.dailyUsageRatio()
+	preferred := make([]*account.Account, 0, len(candidates))
+	deprioritized := make([]*account.Account, 0)
 
 	for _, acc := range candidates {
 		if acc.LastUsedAt.Valid && now.Sub(acc.LastUsedAt.Time) < minInterval {
@@ -270,29 +275,65 @@ func (s *Scheduler) tryDispatchOnce(ctx context.Context, modelType string) (*Lea
 			})
 			continue
 		}
-		if acc.DailyImageQuota > 0 {
+		dailyQuota := effectiveDailyQuota(acc)
+		if dailyQuota > 0 {
 			usedToday := 0
 			if acc.TodayUsedDate.Valid && sameDay(acc.TodayUsedDate.Time, now) {
 				usedToday = acc.TodayUsedCount
 			}
-			max := int(float64(acc.DailyImageQuota) * dailyRatio)
-			if max > 0 && usedToday >= max {
+			if usedToday >= dailyQuota {
 				stats.SkippedQuota++
 				stats.addSample(dispatchSkipSample{
 					AccountID:       acc.ID,
 					Status:          acc.Status,
 					Reason:          "daily_quota",
 					UsedToday:       usedToday,
-					DailyQuota:      acc.DailyImageQuota,
-					DailyLimit:      max,
-					DailyUsageRatio: fmt.Sprintf("%.4f", dailyRatio),
+					DailyQuota:      dailyQuota,
+					ConfiguredQuota: acc.DailyImageQuota,
+					ImageQuotaTotal: acc.ImageQuotaTotal,
 				})
 				continue
 			}
+			softLimit := int(float64(dailyQuota) * dailyRatio)
+			if softLimit > 0 && usedToday >= softLimit {
+				stats.DeprioritizedQuota++
+				stats.addSample(dispatchSkipSample{
+					AccountID:       acc.ID,
+					Status:          acc.Status,
+					Reason:          "daily_quota_deprioritized",
+					UsedToday:       usedToday,
+					DailyQuota:      dailyQuota,
+					ConfiguredQuota: acc.DailyImageQuota,
+					ImageQuotaTotal: acc.ImageQuotaTotal,
+					DailyLimit:      softLimit,
+					DailyUsageRatio: fmt.Sprintf("%.4f", dailyRatio),
+				})
+				deprioritized = append(deprioritized, acc)
+				continue
+			}
 		}
+		preferred = append(preferred, acc)
+	}
+
+	if lease, ok := s.tryLockAny(ctx, preferred, &stats); ok {
+		return lease, nil
+	}
+	if lease, ok := s.tryLockAny(ctx, deprioritized, &stats); ok {
+		logger.L().Info("scheduler dispatch over daily usage ratio",
+			zap.Uint64("account_id", lease.Account.ID),
+			zap.Int("used_today", lease.Account.TodayUsedCount),
+			zap.Int("daily_quota", effectiveDailyQuota(lease.Account)),
+			zap.Float64("daily_usage_ratio", dailyRatio))
+		return lease, nil
+	}
+	return nil, &noAvailableError{stats: stats}
+}
+
+func (s *Scheduler) tryLockAny(ctx context.Context, accounts []*account.Account, stats *dispatchSkipStats) (*Lease, bool) {
+	for _, acc := range accounts {
 		lease, err := s.tryLock(ctx, acc)
 		if err == nil {
-			return lease, nil
+			return lease, true
 		}
 		if errors.Is(err, lock.ErrNotAcquired) {
 			// 被别的请求占用,下一个候选
@@ -314,7 +355,7 @@ func (s *Scheduler) tryDispatchOnce(ctx context.Context, modelType string) (*Lea
 		logger.L().Warn("scheduler tryLock error",
 			zap.Uint64("account_id", acc.ID), zap.Error(err))
 	}
-	return nil, &noAvailableError{stats: stats}
+	return nil, false
 }
 
 func (s *Scheduler) logNoAvailable(ctx context.Context, modelType string, attempt int, start time.Time, last *noAvailableError) {
@@ -332,6 +373,7 @@ func (s *Scheduler) logNoAvailable(ctx context.Context, modelType string, attemp
 			zap.Int("candidate_count", last.stats.CandidateCount),
 			zap.Int("skipped_min_interval", last.stats.SkippedInterval),
 			zap.Int("skipped_daily_quota", last.stats.SkippedQuota),
+			zap.Int("deprioritized_daily_quota", last.stats.DeprioritizedQuota),
 			zap.Int("skipped_lock_busy", last.stats.SkippedLockBusy),
 			zap.Int("skipped_lock_error", last.stats.SkippedLockErr),
 			zap.Any("skip_samples", last.stats.Samples),
@@ -456,4 +498,15 @@ func truncateDay(t time.Time) time.Time {
 
 func sameDay(a, b time.Time) bool {
 	return a.Year() == b.Year() && a.Month() == b.Month() && a.Day() == b.Day()
+}
+
+func effectiveDailyQuota(acc *account.Account) int {
+	if acc == nil {
+		return 0
+	}
+	quota := acc.DailyImageQuota
+	if acc.ImageQuotaTotal > quota {
+		quota = acc.ImageQuotaTotal
+	}
+	return quota
 }
