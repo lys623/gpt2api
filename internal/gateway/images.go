@@ -31,8 +31,18 @@ const maxReferenceImageBytes = 20 * 1024 * 1024
 // 同一次请求最多携带的参考图数量。
 const maxReferenceImages = 4
 
-// 异步 Runner 外层超时 7 分钟;查询端多留一点缓冲后把遗留 running 任务兜底置失败。
-const imageTaskStaleAfter = 8 * time.Minute
+const (
+	// 异步图像任务允许比同步请求等得更久。复杂图/文字图常见上游已经生成,
+	// 但 conversation 里结果引用补得较晚,7 分钟窗口容易提前判失败。
+	imageAsyncRunnerTimeout       = 12 * time.Minute
+	imageAsyncPerAttemptTimeout   = 11 * time.Minute
+	imageAsyncPollMaxWait         = 10 * time.Minute
+	imageAsyncRecoveryPollMaxWait = 2 * time.Minute
+
+	// 查询端只负责清理真正遗留的 running 任务,必须覆盖 runner timeout
+	// 和最后一次恢复轮询窗口,避免用户查询接口抢先把任务判死。
+	imageTaskStaleAfter = imageAsyncRunnerTimeout + imageAsyncRecoveryPollMaxWait + time.Minute
+)
 
 // chatMsg 是 OpenAI chat message 的本地别名,便于 handleChatAsImage 内部表达。
 type chatMsg = chatgpt.ChatMessage
@@ -290,7 +300,7 @@ func (h *ImagesHandler) ImageGenerations(c *gin.Context) {
 			Prompt:        maybeAppendClaritySuffix(req.Prompt),
 			N:             req.N,
 			MaxAttempts:   maxAttempts,
-			Timeout:       7 * time.Minute,
+			Timeout:       imageAsyncRunnerTimeout,
 			Cost:          cost,
 			Refs:          refs,
 			StartAt:       startAt,
@@ -460,23 +470,32 @@ func (h *ImagesHandler) startAsyncImageRun(job imageAsyncJob) {
 			return
 		}
 		if job.Timeout <= 0 {
-			job.Timeout = 7 * time.Minute
+			job.Timeout = imageAsyncRunnerTimeout
 		}
 		runCtx, cancel := context.WithTimeout(context.Background(), job.Timeout)
 		defer cancel()
 
 		res := h.Runner.Run(runCtx, image.RunOptions{
-			TaskID:        job.TaskID,
-			UserID:        job.UserID,
-			KeyID:         job.KeyID,
-			ModelID:       job.ModelID,
-			UpstreamModel: job.UpstreamModel,
-			Prompt:        job.Prompt,
-			N:             job.N,
-			MaxAttempts:   job.MaxAttempts,
-			References:    job.Refs,
+			TaskID:            job.TaskID,
+			UserID:            job.UserID,
+			KeyID:             job.KeyID,
+			ModelID:           job.ModelID,
+			UpstreamModel:     job.UpstreamModel,
+			Prompt:            job.Prompt,
+			N:                 job.N,
+			MaxAttempts:       job.MaxAttempts,
+			PerAttemptTimeout: imageAsyncPerAttemptTimeout,
+			PollMaxWait:       imageAsyncPollMaxWait,
+			References:        job.Refs,
 		})
 		rec.AccountID = res.AccountID
+
+		if res.Status != image.StatusSuccess {
+			if recovered := h.recoverAsyncImageResult(context.Background(), job, res); recovered != nil {
+				res = recovered
+				rec.AccountID = res.AccountID
+			}
+		}
 
 		if res.Status != image.StatusSuccess {
 			refund(ifEmpty(res.ErrorCode, "upstream_error"), res.ErrorMessage)
@@ -508,6 +527,153 @@ func (h *ImagesHandler) startAsyncImageRun(job imageAsyncJob) {
 			_ = h.DAO.UpdateCost(context.Background(), job.TaskID, job.Cost)
 		}
 	}()
+}
+
+func (h *ImagesHandler) recoverAsyncImageResult(ctx context.Context, job imageAsyncJob, failed *image.RunResult) *image.RunResult {
+	if h == nil || h.DAO == nil || h.ImageAccResolver == nil {
+		return nil
+	}
+	accountID := uint64(0)
+	convID := ""
+	if failed != nil {
+		accountID = failed.AccountID
+		convID = strings.TrimSpace(failed.ConversationID)
+	}
+	if accountID == 0 || convID == "" {
+		t, err := h.DAO.Get(ctx, job.TaskID)
+		if err == nil && t != nil {
+			if accountID == 0 {
+				accountID = t.AccountID
+			}
+			if convID == "" {
+				convID = strings.TrimSpace(t.ConversationID)
+			}
+		}
+	}
+	if accountID == 0 || convID == "" {
+		return nil
+	}
+
+	recoverCtx, cancel := context.WithTimeout(ctx, imageAsyncRecoveryPollMaxWait)
+	defer cancel()
+
+	at, deviceID, cookies, err := h.ImageAccResolver.AuthToken(recoverCtx, accountID)
+	if err != nil {
+		logger.L().Warn("async image recover resolve account",
+			zap.String("task_id", job.TaskID),
+			zap.Uint64("account_id", accountID),
+			zap.Error(err))
+		return nil
+	}
+	cli, err := chatgpt.New(chatgpt.Options{
+		AuthToken: at,
+		DeviceID:  deviceID,
+		ProxyURL:  h.ImageAccResolver.ProxyURL(recoverCtx, accountID),
+		Cookies:   cookies,
+		Timeout:   h.upstreamTimeout(),
+	})
+	if err != nil {
+		logger.L().Warn("async image recover build client",
+			zap.String("task_id", job.TaskID),
+			zap.Uint64("account_id", accountID),
+			zap.Error(err))
+		return nil
+	}
+
+	exclude := recoverReferenceFileIDSet(failed)
+	status, fids, sids, assistantText := cli.PollConversationForImages(recoverCtx, convID, chatgpt.PollOpts{
+		ExpectedN:      job.N,
+		ExcludeFileIDs: exclude,
+		MaxWait:        imageAsyncRecoveryPollMaxWait,
+		Interval:       3 * time.Second,
+	})
+	if status != chatgpt.PollStatusSuccess {
+		logger.L().Info("async image recover did not find result",
+			zap.String("task_id", job.TaskID),
+			zap.Uint64("account_id", accountID),
+			zap.String("conv_id", convID),
+			zap.String("poll_status", string(status)),
+			zap.String("poll_text", truncate(assistantText, 500)))
+		return nil
+	}
+
+	fileRefs := make([]string, 0, len(fids)+len(sids))
+	for _, fid := range fids {
+		if _, skip := exclude[normalizeRecoveredImageRef(fid)]; skip {
+			continue
+		}
+		fileRefs = append(fileRefs, fid)
+	}
+	for _, sid := range sids {
+		ref := "sed:" + sid
+		if _, skip := exclude[normalizeRecoveredImageRef(ref)]; skip {
+			continue
+		}
+		fileRefs = append(fileRefs, ref)
+	}
+	if len(fileRefs) == 0 {
+		return nil
+	}
+
+	signedURLs := make([]string, 0, len(fileRefs))
+	keptRefs := make([]string, 0, len(fileRefs))
+	for _, ref := range fileRefs {
+		url, err := cli.ImageDownloadURL(recoverCtx, convID, ref)
+		if err != nil {
+			logger.L().Warn("async image recover download url failed",
+				zap.String("task_id", job.TaskID),
+				zap.String("ref", ref),
+				zap.Error(err))
+			continue
+		}
+		keptRefs = append(keptRefs, ref)
+		signedURLs = append(signedURLs, url)
+	}
+	if len(signedURLs) == 0 {
+		return nil
+	}
+
+	if err := h.DAO.MarkSuccess(context.Background(), job.TaskID, convID, keptRefs, signedURLs, 0); err != nil {
+		logger.L().Warn("async image recover mark success failed",
+			zap.String("task_id", job.TaskID),
+			zap.Error(err))
+		return nil
+	}
+	logger.L().Info("async image recovered generated result",
+		zap.String("task_id", job.TaskID),
+		zap.Uint64("account_id", accountID),
+		zap.String("conv_id", convID),
+		zap.Int("refs", len(keptRefs)),
+		zap.Strings("refs_list", keptRefs))
+
+	return &image.RunResult{
+		Status:         image.StatusSuccess,
+		ConversationID: convID,
+		AccountID:      accountID,
+		FileIDs:        keptRefs,
+		SignedURLs:     signedURLs,
+		Attempts:       1,
+	}
+}
+
+func recoverReferenceFileIDSet(res *image.RunResult) map[string]struct{} {
+	out := make(map[string]struct{})
+	if res == nil {
+		return out
+	}
+	for _, ref := range res.ReferenceFileIDs {
+		if id := normalizeRecoveredImageRef(ref); id != "" {
+			out[id] = struct{}{}
+		}
+	}
+	return out
+}
+
+func normalizeRecoveredImageRef(ref string) string {
+	ref = strings.TrimSpace(ref)
+	ref = strings.TrimPrefix(ref, "file-service://")
+	ref = strings.TrimPrefix(ref, "sed:")
+	return ref
 }
 
 // ImageTask GET /v1/images/tasks/:id。

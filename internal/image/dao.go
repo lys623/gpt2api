@@ -108,7 +108,8 @@ func (d *DAO) MarkFailedWithMessage(ctx context.Context, taskID, errorCode, erro
 	_, err := d.db.ExecContext(ctx, `
 UPDATE image_tasks
    SET status='failed', error=?, finished_at=NOW()
- WHERE task_id=?`, truncate(taskErrorDetail(errorCode, errorMessage), 500), taskID)
+ WHERE task_id=?
+   AND status IN ('queued','dispatched','running')`, truncate(taskErrorDetail(errorCode, errorMessage), 500), taskID)
 	return err
 }
 

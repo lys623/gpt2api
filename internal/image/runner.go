@@ -68,16 +68,17 @@ type RunOptions struct {
 
 // RunResult 是单次生图的输出。
 type RunResult struct {
-	Status         string // success / failed
-	ConversationID string
-	AccountID      uint64
-	FileIDs        []string // chatgpt.com 侧的原始 ref("sed:" 前缀表示 sediment)
-	SignedURLs     []string // 直接可访问的签名 URL(15 分钟有效)
-	ContentTypes   []string
-	ErrorCode      string
-	ErrorMessage   string
-	Attempts       int // 跨账号尝试次数(runOnce 次数)
-	DurationMs     int64
+	Status           string // success / failed
+	ConversationID   string
+	AccountID        uint64
+	FileIDs          []string // chatgpt.com 侧的原始 ref("sed:" 前缀表示 sediment)
+	SignedURLs       []string // 直接可访问的签名 URL(15 分钟有效)
+	ContentTypes     []string
+	ReferenceFileIDs []string // 本次上传的参考图 file_id,用于失败恢复时排除
+	ErrorCode        string
+	ErrorMessage     string
+	Attempts         int // 跨账号尝试次数(runOnce 次数)
+	DurationMs       int64
 }
 
 // Run 执行生图。会同步阻塞直到完成/失败;调用方自行做超时控制(传 ctx)。
@@ -361,6 +362,9 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 				return false, ErrUpstream, fmt.Errorf("upload reference %d: %w", idx, err)
 			}
 			refs = append(refs, up)
+			if up.FileID != "" {
+				result.ReferenceFileIDs = append(result.ReferenceFileIDs, up.FileID)
+			}
 		}
 		logger.L().Info("image runner references uploaded",
 			zap.String("task_id", opt.TaskID), zap.Int("count", len(refs)))
