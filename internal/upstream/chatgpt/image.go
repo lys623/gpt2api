@@ -629,11 +629,12 @@ func ExtractAssistantTextMsgs(mapping map[string]interface{}) []string {
 //   - 没够数继续轮询,到 MaxWait 仍有至少 1 张也算成功(速度优先)
 //   - 全程没拿到图才是 timeout
 type PollOpts struct {
-	BaselineToolIDs map[string]struct{} // 发送前已存在的 tool 消息 id,本次回合只看新增
-	ExcludeFileIDs  map[string]struct{} // 需要排除的 file-service id,通常是用户上传的参考图
-	ExpectedN       int                 // 期望返回的图片张数,够了立即短路,默认 1
-	MaxWait         time.Duration       // 总超时,默认 300s(上游渲染慢时兜底补齐)
-	Interval        time.Duration       // 轮询间隔,默认 3s
+	BaselineToolIDs     map[string]struct{} // 发送前已存在的 tool 消息 id,本次回合只看新增
+	ExcludeFileIDs      map[string]struct{} // 需要排除的 file-service id,通常是用户上传的参考图
+	ExpectedN           int                 // 期望返回的图片张数,够了立即短路,默认 1
+	MaxWait             time.Duration       // 总超时,默认 300s(上游渲染慢时兜底补齐)
+	Interval            time.Duration       // 轮询间隔,默认 3s
+	SedimentOnlyMinWait time.Duration       // 只有 sediment 时至少等一会儿,给 file-service 终稿补齐
 }
 
 // PollStatus 是 PollConversationForImages 的结果状态。
@@ -676,6 +677,7 @@ func (c *Client) PollConversationForImages(ctx context.Context, convID string, o
 		seenSed        = map[string]struct{}{}
 		consecutive429 int
 		assistantText  string
+		sedOnlySince   time.Time
 	)
 
 	for time.Now().Before(deadline) {
@@ -738,7 +740,19 @@ func (c *Client) PollConversationForImages(ctx context.Context, convID string, o
 
 		// 够 N 张立即短路返回(file-service 优先占配额,sediment 补位)
 		if len(allFile)+len(allSed) >= opt.ExpectedN {
+			if len(allFile) == 0 && len(allSed) > 0 && opt.SedimentOnlyMinWait > 0 {
+				if sedOnlySince.IsZero() {
+					sedOnlySince = time.Now()
+				}
+				if time.Since(sedOnlySince) < opt.SedimentOnlyMinWait {
+					sleep(ctx, opt.Interval)
+					continue
+				}
+			}
 			return PollStatusSuccess, allFile, allSed, assistantText
+		}
+		if len(allFile) > 0 || len(allSed) == 0 {
+			sedOnlySince = time.Time{}
 		}
 		if isTerminalImageRejectionText(assistantText) {
 			return PollStatusRejected, nil, nil, assistantText

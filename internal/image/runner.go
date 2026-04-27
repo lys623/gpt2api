@@ -1,10 +1,14 @@
 package image
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	stdimage "image"
+	"math/bits"
 	"strings"
 	"sync"
 	"time"
@@ -346,6 +350,7 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 	// 三步串行各自最多耗时 30s 上下,叠加重试时单张图最坏 ≈ 3*(30s+5s) = 105s。
 	// 给 180s 留一点余量;如果还是超时,说明根本不是瞬时问题,fail-fast 也合理。
 	var refs []*chatgpt.UploadedFile
+	refFingerprints := referenceImageFingerprints(opt.References)
 	if len(opt.References) > 0 {
 		for idx, r0 := range opt.References {
 			upCtx, cancel := context.WithTimeout(ctx, 180*time.Second)
@@ -481,8 +486,10 @@ afterSSE:
 		return false, ErrUpstreamRejected, errors.New(sseResult.AssistantText)
 	}
 
-	// SSE 已经把期望数量的图带回来了 → 直接下载,跳过 Poll,省时间
-	if len(fileRefs) >= opt.N {
+	// SSE 已经把期望数量的图带回来了 → 直接下载,跳过 Poll,省时间。
+	// 但图生图/编辑场景里,SSE 可能先带出用户上传参考图或其 sediment 形态;
+	// 此时继续 poll,等真正的 file-service 终稿补齐,避免把上传图当结果。
+	if len(fileRefs) >= opt.N && len(refSet) == 0 {
 		logger.L().Info("image runner enough refs from SSE, skip polling",
 			zap.String("task_id", opt.TaskID),
 			zap.Uint64("account_id", lease.Account.ID),
@@ -509,9 +516,10 @@ afterSSE:
 		// 单轮新会话,不需要 baseline:conversation 里出现的每条 image_gen tool 消息
 		// 都是本次请求的产物。
 		pollOpt := chatgpt.PollOpts{
-			ExpectedN:      opt.N,
-			ExcludeFileIDs: refSet,
-			MaxWait:        opt.PollMaxWait,
+			ExpectedN:           opt.N,
+			ExcludeFileIDs:      refSet,
+			MaxWait:             opt.PollMaxWait,
+			SedimentOnlyMinWait: sedimentOnlyMinWait(refSet),
 		}
 		status, fids, sids, assistantText := cli.PollConversationForImages(ctx, convID, pollOpt)
 		logger.L().Info("image runner poll done",
@@ -584,8 +592,10 @@ afterSSE:
 	}
 
 	// 6) 对每个 ref 取签名 URL
+	var keptRefs []string
 	var signedURLs []string
 	var contentTypes []string
+	droppedReferenceContent := 0
 	for _, ref := range fileRefs {
 		url, err := cli.ImageDownloadURL(ctx, convID, ref)
 		if err != nil {
@@ -593,10 +603,35 @@ afterSSE:
 				zap.String("ref", ref), zap.Error(err))
 			continue
 		}
+		contentType := "image/png"
+		if len(refFingerprints) > 0 {
+			data, ct, err := cli.FetchImage(ctx, url, 16*1024*1024)
+			if err != nil {
+				logger.L().Warn("image runner reference-content validation fetch failed",
+					zap.String("task_id", opt.TaskID),
+					zap.String("ref", ref),
+					zap.Error(err))
+			} else {
+				if ct != "" {
+					contentType = ct
+				}
+				if matchesReferenceImage(data, refFingerprints) {
+					droppedReferenceContent++
+					logger.L().Warn("image runner dropped candidate matching uploaded reference image",
+						zap.String("task_id", opt.TaskID),
+						zap.String("ref", ref))
+					continue
+				}
+			}
+		}
+		keptRefs = append(keptRefs, ref)
 		signedURLs = append(signedURLs, url)
-		contentTypes = append(contentTypes, "image/png")
+		contentTypes = append(contentTypes, contentType)
 	}
 	if len(signedURLs) == 0 {
+		if droppedReferenceContent > 0 {
+			return false, ErrInvalidResponse, errors.New("only uploaded reference image content was produced")
+		}
 		return false, ErrDownload, errors.New("all download urls failed")
 	}
 
@@ -604,12 +639,12 @@ afterSSE:
 		zap.String("task_id", opt.TaskID),
 		zap.Uint64("account_id", lease.Account.ID),
 		zap.String("conv_id", convID),
-		zap.Int("refs", len(fileRefs)),
-		zap.Strings("refs_list", fileRefs),
+		zap.Int("refs", len(keptRefs)),
+		zap.Strings("refs_list", keptRefs),
 		zap.Int("signed_count", len(signedURLs)),
 	)
 
-	result.FileIDs = fileRefs
+	result.FileIDs = keptRefs
 	result.SignedURLs = signedURLs
 	result.ContentTypes = contentTypes
 	return true, "", nil
@@ -656,6 +691,120 @@ func normalizeImageFileRef(ref string) string {
 	ref = strings.TrimPrefix(ref, "file-service://")
 	ref = strings.TrimPrefix(ref, "sed:")
 	return ref
+}
+
+func sedimentOnlyMinWait(refSet map[string]struct{}) time.Duration {
+	if len(refSet) == 0 {
+		return 0
+	}
+	return 15 * time.Second
+}
+
+type imageFingerprint struct {
+	rawSHA256 [32]byte
+	width     int
+	height    int
+	avgHash   uint64
+	avgR      uint32
+	avgG      uint32
+	avgB      uint32
+	hasAvg    bool
+}
+
+func referenceImageFingerprints(refs []ReferenceImage) []imageFingerprint {
+	out := make([]imageFingerprint, 0, len(refs))
+	for _, ref := range refs {
+		if len(ref.Data) == 0 {
+			continue
+		}
+		out = append(out, fingerprintImageBytes(ref.Data))
+	}
+	return out
+}
+
+func fingerprintImageBytes(data []byte) imageFingerprint {
+	fp := imageFingerprint{rawSHA256: sha256.Sum256(data)}
+	img, _, err := stdimage.Decode(bytes.NewReader(data))
+	if err != nil {
+		return fp
+	}
+	b := img.Bounds()
+	fp.width = b.Dx()
+	fp.height = b.Dy()
+	fp.avgHash, fp.avgR, fp.avgG, fp.avgB, fp.hasAvg = averageImageHash(img)
+	return fp
+}
+
+func matchesReferenceImage(data []byte, refs []imageFingerprint) bool {
+	if len(data) == 0 || len(refs) == 0 {
+		return false
+	}
+	candidate := fingerprintImageBytes(data)
+	for _, ref := range refs {
+		if candidate.rawSHA256 == ref.rawSHA256 {
+			return true
+		}
+		if !candidate.hasAvg || !ref.hasAvg {
+			continue
+		}
+		dist := bits.OnesCount64(candidate.avgHash ^ ref.avgHash)
+		colorDist := averageColorDistance(candidate, ref)
+		if candidate.width == ref.width && candidate.height == ref.height && dist <= 1 && colorDist <= 12 {
+			return true
+		}
+		if dist == 0 && colorDist <= 8 {
+			return true
+		}
+	}
+	return false
+}
+
+func averageImageHash(img stdimage.Image) (uint64, uint32, uint32, uint32, bool) {
+	if img == nil || img.Bounds().Empty() {
+		return 0, 0, 0, 0, false
+	}
+	b := img.Bounds()
+	var samples [64]uint32
+	var sum uint32
+	var sumR, sumG, sumB uint32
+	for y := 0; y < 8; y++ {
+		py := b.Min.Y + (y*b.Dy()+b.Dy()/2)/8
+		if py >= b.Max.Y {
+			py = b.Max.Y - 1
+		}
+		for x := 0; x < 8; x++ {
+			px := b.Min.X + (x*b.Dx()+b.Dx()/2)/8
+			if px >= b.Max.X {
+				px = b.Max.X - 1
+			}
+			r, g, bl, _ := img.At(px, py).RGBA()
+			luma := uint32((299*r + 587*g + 114*bl) / 1000)
+			samples[y*8+x] = luma
+			sum += luma
+			sumR += uint32(r)
+			sumG += uint32(g)
+			sumB += uint32(bl)
+		}
+	}
+	avg := sum / 64
+	var hash uint64
+	for i, v := range samples {
+		if v >= avg {
+			hash |= 1 << uint(i)
+		}
+	}
+	return hash, sumR / 64 / 257, sumG / 64 / 257, sumB / 64 / 257, true
+}
+
+func averageColorDistance(a, b imageFingerprint) uint32 {
+	return absDiff(a.avgR, b.avgR) + absDiff(a.avgG, b.avgG) + absDiff(a.avgB, b.avgB)
+}
+
+func absDiff(a, b uint32) uint32 {
+	if a > b {
+		return a - b
+	}
+	return b - a
 }
 
 // classifyUpstream 把上游错误转成内部 error code。

@@ -211,6 +211,60 @@ func TestPollConversationForImagesExcludesReferenceFileIDs(t *testing.T) {
 	}
 }
 
+func TestPollConversationForImagesWaitsOnSedimentOnlyWhenConfigured(t *testing.T) {
+	calls := 0
+	conversations := []map[string]interface{}{
+		{
+			"mapping": map[string]interface{}{
+				"tool_ref_sed": imageToolMappingNode(1, []interface{}{
+					map[string]interface{}{"asset_pointer": "sediment://sed_uploaded_ref"},
+				}),
+			},
+		},
+		{
+			"mapping": map[string]interface{}{
+				"tool_ref_sed": imageToolMappingNode(1, []interface{}{
+					map[string]interface{}{"asset_pointer": "sediment://sed_uploaded_ref"},
+				}),
+				"tool_result": imageToolMappingNode(2, []interface{}{
+					map[string]interface{}{"asset_pointer": "file-service://file_generated_result"},
+				}),
+			},
+		},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		idx := calls
+		if idx >= len(conversations) {
+			idx = len(conversations) - 1
+		}
+		calls++
+		_ = json.NewEncoder(w).Encode(conversations[idx])
+	}))
+	defer srv.Close()
+
+	c := &Client{opts: Options{BaseURL: srv.URL}, hc: srv.Client()}
+	status, fids, _, assistantText := c.PollConversationForImages(
+		context.Background(),
+		"conv_image",
+		PollOpts{
+			ExpectedN:           1,
+			MaxWait:             time.Second,
+			Interval:            10 * time.Millisecond,
+			SedimentOnlyMinWait: 50 * time.Millisecond,
+		},
+	)
+
+	if status != PollStatusSuccess {
+		t.Fatalf("status = %q, want %q (text=%q)", status, PollStatusSuccess, assistantText)
+	}
+	if len(fids) != 1 || fids[0] != "file_generated_result" {
+		t.Fatalf("fids = %#v, want generated file result", fids)
+	}
+	if calls < 2 {
+		t.Fatalf("calls = %d, want poll to wait past sediment-only response", calls)
+	}
+}
+
 func imageToolMappingNode(createTime float64, parts []interface{}) map[string]interface{} {
 	return map[string]interface{}{
 		"message": map[string]interface{}{

@@ -1,6 +1,10 @@
 package image
 
 import (
+	"bytes"
+	stdimage "image"
+	"image/color"
+	"image/png"
 	"reflect"
 	"testing"
 
@@ -34,12 +38,45 @@ func TestFilterOutReferenceFileIDs(t *testing.T) {
 	}
 }
 
+func TestMatchesReferenceImageContent(t *testing.T) {
+	ref := testPNG(t, color.RGBA{R: 240, G: 120, B: 20, A: 255})
+	other := testPNG(t, color.RGBA{R: 20, G: 120, B: 240, A: 255})
+
+	fps := referenceImageFingerprints([]ReferenceImage{{Data: ref, FileName: "ref.png"}})
+	if !matchesReferenceImage(ref, fps) {
+		t.Fatalf("matchesReferenceImage(ref) = false, want true")
+	}
+	if matchesReferenceImage(other, fps) {
+		t.Fatalf("matchesReferenceImage(other) = true, want false")
+	}
+}
+
 func TestTaskErrorDetailKeepsUpstreamMessage(t *testing.T) {
 	got := taskErrorDetail(ErrUpstreamRejected, "非常抱歉，该提示可能违反了关于与第三方内容相似性的防护限制。")
 	want := "upstream_rejected: 非常抱歉，该提示可能违反了关于与第三方内容相似性的防护限制。"
 	if got != want {
 		t.Fatalf("taskErrorDetail() = %q, want %q", got, want)
 	}
+}
+
+func testPNG(t *testing.T, c color.RGBA) []byte {
+	t.Helper()
+	img := imageNewRGBA(8, 8, c)
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("png encode: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func imageNewRGBA(w, h int, c color.RGBA) *stdimage.RGBA {
+	img := stdimage.NewRGBA(stdimage.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.SetRGBA(x, y, c)
+		}
+	}
+	return img
 }
 
 func TestTruncateIsRuneSafe(t *testing.T) {

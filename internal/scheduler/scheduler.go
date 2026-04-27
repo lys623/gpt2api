@@ -3,7 +3,7 @@
 // 核心规则(参考 RISK_AND_SAAS.md):
 //  1. 一号一锁:同账号同时只允许 1 个请求占用(Redis SETNX)。
 //  2. 最小间隔:同账号相邻请求 >= min_interval_sec。
-//  3. 每日配额:优先使用未超过 daily_usage_ratio 的账号,达到真实日上限才硬停。
+//  3. 每日配额:优先使用未超过 daily_usage_ratio 的账号,仅在探测明确剩余 0 时硬停。
 //  4. 状态机:healthy -> warned -> throttled -> suspicious -> dead,冷却过期自动恢复。
 //  5. 选择策略:status=healthy + cooldown 到期 + last_used_at 最早的优先。
 package scheduler
@@ -52,6 +52,8 @@ type dispatchSkipSample struct {
 	LastUsedAgoSec  int64  `json:"last_used_ago_sec,omitempty"`
 	MinIntervalSec  int    `json:"min_interval_sec,omitempty"`
 	UsedToday       int    `json:"used_today,omitempty"`
+	QuotaRemaining  int    `json:"quota_remaining,omitempty"`
+	QuotaResetAt    string `json:"quota_reset_at,omitempty"`
 	DailyQuota      int    `json:"daily_quota,omitempty"`
 	ConfiguredQuota int    `json:"configured_quota,omitempty"`
 	ImageQuotaTotal int    `json:"image_quota_total,omitempty"`
@@ -244,7 +246,7 @@ func (s *Scheduler) Dispatch(ctx context.Context, modelType string) (*Lease, err
 }
 
 // tryDispatchOnce 扫一遍 candidate,尝试为其中一个加锁;
-// 全部 candidate 都被锁 / 不满足 min_interval / 真实日上限时返回 ErrNoAvailable。
+// 全部 candidate 都被锁 / 不满足 min_interval / 明确无剩余额度时返回 ErrNoAvailable。
 func (s *Scheduler) tryDispatchOnce(ctx context.Context, modelType string) (*Lease, error) {
 	limit := 30
 	dao := s.accSvc.DAO()
@@ -275,24 +277,22 @@ func (s *Scheduler) tryDispatchOnce(ctx context.Context, modelType string) (*Lea
 			})
 			continue
 		}
+		if isImageQuotaExhausted(acc, now) {
+			stats.SkippedQuota++
+			stats.addSample(dispatchSkipSample{
+				AccountID:      acc.ID,
+				Status:         acc.Status,
+				Reason:         "image_quota_exhausted",
+				QuotaRemaining: acc.ImageQuotaRemaining,
+				QuotaResetAt:   acc.ImageQuotaResetAt.Time.Format(time.RFC3339),
+			})
+			continue
+		}
 		dailyQuota := effectiveDailyQuota(acc)
 		if dailyQuota > 0 {
 			usedToday := 0
 			if acc.TodayUsedDate.Valid && sameDay(acc.TodayUsedDate.Time, now) {
 				usedToday = acc.TodayUsedCount
-			}
-			if usedToday >= dailyQuota {
-				stats.SkippedQuota++
-				stats.addSample(dispatchSkipSample{
-					AccountID:       acc.ID,
-					Status:          acc.Status,
-					Reason:          "daily_quota",
-					UsedToday:       usedToday,
-					DailyQuota:      dailyQuota,
-					ConfiguredQuota: acc.DailyImageQuota,
-					ImageQuotaTotal: acc.ImageQuotaTotal,
-				})
-				continue
 			}
 			softLimit := int(float64(dailyQuota) * dailyRatio)
 			if softLimit > 0 && usedToday >= softLimit {
@@ -372,7 +372,7 @@ func (s *Scheduler) logNoAvailable(ctx context.Context, modelType string, attemp
 		fields = append(fields,
 			zap.Int("candidate_count", last.stats.CandidateCount),
 			zap.Int("skipped_min_interval", last.stats.SkippedInterval),
-			zap.Int("skipped_daily_quota", last.stats.SkippedQuota),
+			zap.Int("skipped_quota_exhausted", last.stats.SkippedQuota),
 			zap.Int("deprioritized_daily_quota", last.stats.DeprioritizedQuota),
 			zap.Int("skipped_lock_busy", last.stats.SkippedLockBusy),
 			zap.Int("skipped_lock_error", last.stats.SkippedLockErr),
@@ -509,4 +509,11 @@ func effectiveDailyQuota(acc *account.Account) int {
 		quota = acc.ImageQuotaTotal
 	}
 	return quota
+}
+
+func isImageQuotaExhausted(acc *account.Account, now time.Time) bool {
+	if acc == nil || !acc.ImageQuotaUpdatedAt.Valid || acc.ImageQuotaRemaining > 0 {
+		return false
+	}
+	return acc.ImageQuotaResetAt.Valid && acc.ImageQuotaResetAt.Time.After(now)
 }
