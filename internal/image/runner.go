@@ -588,7 +588,11 @@ afterSSE:
 			return false, ErrUpstreamRejected, errors.New("upstream rejected image generation")
 		default:
 			if msg := firstFilled(assistantText, sseResult.AssistantText); msg != "" {
-				return false, assistantFailureCode(msg, ErrUpstream), errors.New(msg)
+				code := assistantFailureCode(msg, ErrUpstream)
+				if code == ErrRateLimited {
+					r.sched.MarkRateLimited(context.Background(), lease.Account.ID)
+				}
+				return false, code, errors.New(msg)
 			}
 			return false, ErrUpstream, errors.New("poll error")
 		}
@@ -971,6 +975,9 @@ func isImageRejectionMessage(s string) bool {
 }
 
 func assistantFailureCode(message, fallback string) string {
+	if isRateLimitMessage(message) {
+		return ErrRateLimited
+	}
 	if bodyContainsSkippedMainline(message) {
 		return ErrPollTimeout
 	}
@@ -978,6 +985,21 @@ func assistantFailureCode(message, fallback string) string {
 		return ErrUpstreamRejected
 	}
 	return fallback
+}
+
+func isRateLimitMessage(message string) bool {
+	s := strings.ToLower(strings.TrimSpace(message))
+	if s == "" {
+		return false
+	}
+	if strings.Contains(s, "too many requests") ||
+		strings.Contains(s, "rate limited") ||
+		strings.Contains(s, "rate limit") ||
+		strings.Contains(s, "http=429") ||
+		strings.Contains(s, "status=429") {
+		return true
+	}
+	return strings.Contains(s, "429") && strings.Contains(s, "conversation poll")
 }
 
 func firstFilled(items ...string) string {

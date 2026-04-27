@@ -331,6 +331,49 @@ func TestPollConversationForImagesExcludesReferenceFileIDs(t *testing.T) {
 	}
 }
 
+func TestPollConversationForImagesCapturesAssistantAssetPointers(t *testing.T) {
+	conversation := map[string]interface{}{
+		"mapping": map[string]interface{}{
+			"assistant_result": map[string]interface{}{
+				"message": map[string]interface{}{
+					"create_time": float64(2),
+					"author":      map[string]interface{}{"role": "assistant"},
+					"content": map[string]interface{}{
+						"content_type": "multimodal_text",
+						"parts": []interface{}{
+							map[string]interface{}{
+								"content_type":  "image_asset_pointer",
+								"asset_pointer": "file-service://file_generated_from_assistant",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(conversation)
+	}))
+	defer srv.Close()
+
+	c := &Client{opts: Options{BaseURL: srv.URL}, hc: srv.Client()}
+	status, fids, sids, assistantText := c.PollConversationForImages(
+		context.Background(),
+		"conv_image",
+		PollOpts{ExpectedN: 1, MaxWait: time.Second, Interval: time.Millisecond},
+	)
+
+	if status != PollStatusSuccess {
+		t.Fatalf("status = %q, want %q (text=%q)", status, PollStatusSuccess, assistantText)
+	}
+	if len(fids) != 1 || fids[0] != "file_generated_from_assistant" {
+		t.Fatalf("fids = %#v, want assistant asset pointer result", fids)
+	}
+	if len(sids) != 0 {
+		t.Fatalf("sids = %#v, want empty", sids)
+	}
+}
+
 func TestPollConversationForImagesWaitsOnSedimentOnlyWhenConfigured(t *testing.T) {
 	calls := 0
 	conversations := []map[string]interface{}{

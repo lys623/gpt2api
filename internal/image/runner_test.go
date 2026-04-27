@@ -97,6 +97,14 @@ func TestAssistantFailureCode(t *testing.T) {
 	}
 }
 
+func TestAssistantFailureCodeClassifiesPoll429AsRateLimited(t *testing.T) {
+	msg := `conversation poll hit 3 consecutive 429 after 25 attempts: conversation poll upstream http=429 body={"detail":"Too many requests"}`
+	got := assistantFailureCode(msg, ErrUpstream)
+	if got != ErrRateLimited {
+		t.Fatalf("assistantFailureCode(poll 429) = %q, want %q", got, ErrRateLimited)
+	}
+}
+
 func TestSkippedMainlineIsNotClassifiedAsRejected(t *testing.T) {
 	err := &chatgpt.UpstreamError{Status: 400, Message: "f/conversation failed", Body: `{"skipped_mainline":true}`}
 	var r Runner

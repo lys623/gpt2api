@@ -507,7 +507,11 @@ func (c *Client) GetConversationMapping(ctx context.Context, convID string) (map
 	return out, nil
 }
 
-// ExtractImageToolMsgs 从 conversation.mapping 里提取所有 IMG2 tool 消息。
+// ExtractImageToolMsgs 从 conversation.mapping 里提取所有图片引用消息。
+//
+// ChatGPT 的 IMG2 返回结构会变:有时结果在 role=tool + async_task_type=image_gen,
+// 有时会落到 assistant 消息或更深的 asset_pointer 字段里。这里递归扫描整条 message,
+// 调用方再用 ExcludeFileIDs 过滤掉用户上传的参考图。
 func ExtractImageToolMsgs(mapping map[string]interface{}) []ImageToolMsg {
 	out := make([]ImageToolMsg, 0, 4)
 	for mid, raw := range mapping {
@@ -521,68 +525,81 @@ func ExtractImageToolMsgs(mapping map[string]interface{}) []ImageToolMsg {
 		}
 		author, _ := msg["author"].(map[string]interface{})
 		meta, _ := msg["metadata"].(map[string]interface{})
-		content, _ := msg["content"].(map[string]interface{})
-		if author == nil || meta == nil || content == nil {
-			continue
-		}
-		if s, _ := author["role"].(string); s != "tool" {
-			continue
-		}
-		if s, _ := meta["async_task_type"].(string); s != "image_gen" {
-			continue
-		}
-		if s, _ := content["content_type"].(string); s != "multimodal_text" {
+
+		fileIDs, sedimentIDs := collectImageAssetRefs(msg)
+		if len(fileIDs) == 0 && len(sedimentIDs) == 0 {
 			continue
 		}
 
-		tm := ImageToolMsg{MessageID: mid}
+		tm := ImageToolMsg{
+			MessageID:   mid,
+			FileIDs:     fileIDs,
+			SedimentIDs: sedimentIDs,
+		}
 		if v, ok := msg["create_time"].(float64); ok {
 			tm.CreateTime = v
-		}
-		if v, ok := meta["model_slug"].(string); ok {
-			tm.ModelSlug = v
 		}
 		if v, ok := msg["recipient"].(string); ok {
 			tm.Recipient = v
 		}
-		if v, ok := author["name"].(string); ok {
-			tm.AuthorName = v
-		}
-		if v, ok := meta["image_gen_title"].(string); ok {
-			tm.ImageGenTitle = v
-		}
-
-		parts, _ := content["parts"].([]interface{})
-		seenF := map[string]struct{}{}
-		seenS := map[string]struct{}{}
-		extractAsset := func(text string) {
-			for _, m := range reFileRef.FindAllStringSubmatch(text, -1) {
-				if _, ok := seenF[m[1]]; !ok {
-					seenF[m[1]] = struct{}{}
-					tm.FileIDs = append(tm.FileIDs, m[1])
-				}
-			}
-			for _, m := range reSedRef.FindAllStringSubmatch(text, -1) {
-				if _, ok := seenS[m[1]]; !ok {
-					seenS[m[1]] = struct{}{}
-					tm.SedimentIDs = append(tm.SedimentIDs, m[1])
-				}
+		if author != nil {
+			if v, ok := author["name"].(string); ok {
+				tm.AuthorName = v
 			}
 		}
-		for _, p := range parts {
-			switch v := p.(type) {
-			case map[string]interface{}:
-				if aid, _ := v["asset_pointer"].(string); aid != "" {
-					extractAsset(aid)
-				}
-			case string:
-				extractAsset(v)
+		if meta != nil {
+			if v, ok := meta["model_slug"].(string); ok {
+				tm.ModelSlug = v
+			}
+			if v, ok := meta["image_gen_title"].(string); ok {
+				tm.ImageGenTitle = v
 			}
 		}
 		out = append(out, tm)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreateTime < out[j].CreateTime })
 	return out
+}
+
+func collectImageAssetRefs(raw interface{}) ([]string, []string) {
+	seenFile := map[string]struct{}{}
+	seenSed := map[string]struct{}{}
+	var fileIDs []string
+	var sedimentIDs []string
+
+	var scanText = func(text string) {
+		for _, m := range reFileRef.FindAllStringSubmatch(text, -1) {
+			if _, ok := seenFile[m[1]]; ok {
+				continue
+			}
+			seenFile[m[1]] = struct{}{}
+			fileIDs = append(fileIDs, m[1])
+		}
+		for _, m := range reSedRef.FindAllStringSubmatch(text, -1) {
+			if _, ok := seenSed[m[1]]; ok {
+				continue
+			}
+			seenSed[m[1]] = struct{}{}
+			sedimentIDs = append(sedimentIDs, m[1])
+		}
+	}
+	var walk func(interface{})
+	walk = func(v interface{}) {
+		switch x := v.(type) {
+		case string:
+			scanText(x)
+		case []interface{}:
+			for _, item := range x {
+				walk(item)
+			}
+		case map[string]interface{}:
+			for _, item := range x {
+				walk(item)
+			}
+		}
+	}
+	walk(raw)
+	return fileIDs, sedimentIDs
 }
 
 // ExtractAssistantTextMsgs 从 conversation.mapping 里提取 assistant 文本消息。
@@ -634,7 +651,7 @@ type PollOpts struct {
 	ExpectedN           int                 // 期望返回的图片张数,够了立即短路,默认 1
 	MaxWait             time.Duration       // 总超时,默认 300s(上游渲染慢时兜底补齐)
 	Interval            time.Duration       // 轮询间隔,默认 3s
-	RateLimitBackoff    time.Duration       // conversation 轮询遇到 429 后退避,默认 10s
+	RateLimitBackoff    time.Duration       // conversation 轮询遇到 429 后退避,默认 30s
 	SedimentOnlyMinWait time.Duration       // 只有 sediment 时至少等一会儿,给 file-service 终稿补齐
 }
 
@@ -667,7 +684,7 @@ func (c *Client) PollConversationForImages(ctx context.Context, convID string, o
 		opt.Interval = 3 * time.Second
 	}
 	if opt.RateLimitBackoff <= 0 {
-		opt.RateLimitBackoff = 10 * time.Second
+		opt.RateLimitBackoff = 30 * time.Second
 	}
 	baseline := opt.BaselineToolIDs
 
