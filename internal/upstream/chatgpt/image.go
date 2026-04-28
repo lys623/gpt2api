@@ -882,6 +882,9 @@ func isTerminalImageRejectionText(s string) bool {
 	if s == "" {
 		return false
 	}
+	if isImageHandoffText(s) {
+		return true
+	}
 	strong := []string{
 		"违反", "防护限制", "安全策略", "政策", "无法生成", "不能生成", "不可以生成",
 		"policy", "safety", "cannot generate", "can't generate", "unable to generate",
@@ -898,6 +901,15 @@ func isTerminalImageRejectionText(s string) bool {
 		}
 	}
 	return false
+}
+
+func isImageHandoffText(s string) bool {
+	return (strings.Contains(s, "looks like you've uploaded an image") ||
+		strings.Contains(s, "you've uploaded an image") ||
+		strings.Contains(s, "uploaded an image")) &&
+		(strings.Contains(s, "would you like to modify") ||
+			strings.Contains(s, "generate a new image based on it") ||
+			strings.Contains(s, "how can i assist you with it"))
 }
 
 func shouldExcludeFileRef(ref string, exclude map[string]struct{}) bool {

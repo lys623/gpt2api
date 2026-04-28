@@ -129,6 +129,20 @@ UPDATE image_tasks
 	return n > 0, nil
 }
 
+// MarkAllStaleFailed 批量清理卡在运行态的历史任务,供列表接口兜底使用。
+func (d *DAO) MarkAllStaleFailed(ctx context.Context, cutoff time.Time, errorCode, errorMessage string) (int64, error) {
+	res, err := d.db.ExecContext(ctx, `
+UPDATE image_tasks
+   SET status='failed', error=?, finished_at=NOW()
+ WHERE status IN ('queued','dispatched','running')
+   AND COALESCE(started_at, created_at) < ?`,
+		truncate(taskErrorDetail(errorCode, errorMessage), 500), cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // Get 根据对外 task_id 查询。
 func (d *DAO) Get(ctx context.Context, taskID string) (*Task, error) {
 	var t Task

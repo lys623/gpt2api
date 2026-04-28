@@ -53,6 +53,10 @@ func TestAssistantFailureCode(t *testing.T) {
 	if got != ErrUpstreamRejected {
 		t.Fatalf("assistantFailureCode() = %q, want %q", got, ErrUpstreamRejected)
 	}
+	got = assistantFailureCode("It looks like you've uploaded an image! How can I assist you with it? Would you like to modify or generate a new image based on it?", ErrPollTimeout)
+	if got != ErrUpstreamRejected {
+		t.Fatalf("assistantFailureCode(upload handoff) = %q, want %q", got, ErrUpstreamRejected)
+	}
 	got = assistantFailureCode("图片仍在生成中", ErrPollTimeout)
 	if got != ErrPollTimeout {
 		t.Fatalf("assistantFailureCode(non-rejection) = %q, want %q", got, ErrPollTimeout)

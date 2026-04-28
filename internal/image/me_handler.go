@@ -22,22 +22,22 @@ func NewMeHandler(dao *DAO) *MeHandler { return &MeHandler{dao: dao} }
 
 // taskView 是对外返回的视图结构,解码 JSON 列 + 隐藏内部字段。
 type taskView struct {
-	ID             uint64    `json:"id"`
-	TaskID         string    `json:"task_id"`
-	UserID         uint64    `json:"user_id"`
-	ModelID        uint64    `json:"model_id"`
-	AccountID      uint64    `json:"account_id"`
-	Prompt         string    `json:"prompt"`
-	N              int       `json:"n"`
-	Size           string    `json:"size"`
-	Upscale        string    `json:"upscale,omitempty"`
-	Status         string    `json:"status"`
-	ConversationID string    `json:"conversation_id,omitempty"`
-	Error          string    `json:"error,omitempty"`
-	CreditCost     int64     `json:"credit_cost"`
-	ImageURLs      []string  `json:"image_urls"`
-	FileIDs        []string  `json:"file_ids,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID             uint64     `json:"id"`
+	TaskID         string     `json:"task_id"`
+	UserID         uint64     `json:"user_id"`
+	ModelID        uint64     `json:"model_id"`
+	AccountID      uint64     `json:"account_id"`
+	Prompt         string     `json:"prompt"`
+	N              int        `json:"n"`
+	Size           string     `json:"size"`
+	Upscale        string     `json:"upscale,omitempty"`
+	Status         string     `json:"status"`
+	ConversationID string     `json:"conversation_id,omitempty"`
+	Error          string     `json:"error,omitempty"`
+	CreditCost     int64      `json:"credit_cost"`
+	ImageURLs      []string   `json:"image_urls"`
+	FileIDs        []string   `json:"file_ids,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
 	StartedAt      *time.Time `json:"started_at,omitempty"`
 	FinishedAt     *time.Time `json:"finished_at,omitempty"`
 }
@@ -67,7 +67,7 @@ func toView(t *Task) taskView {
 		ID: t.ID, TaskID: t.TaskID, UserID: t.UserID, ModelID: t.ModelID,
 		AccountID: t.AccountID, Prompt: t.Prompt, N: t.N, Size: t.Size,
 		Upscale: t.Upscale,
-		Status: t.Status, ConversationID: t.ConversationID, Error: t.Error,
+		Status:  t.Status, ConversationID: t.ConversationID, Error: t.Error,
 		CreditCost: t.CreditCost, ImageURLs: urls, FileIDs: fids,
 		CreatedAt: t.CreatedAt, StartedAt: t.StartedAt, FinishedAt: t.FinishedAt,
 	}
@@ -75,14 +75,23 @@ func toView(t *Task) taskView {
 
 // GET /api/me/images/tasks
 // 查询参数:
-//   limit(默认 20,上限 100), offset
-//   status            = queued | dispatched | running | success | failed
-//   keyword           = prompt 模糊匹配
-//   start_at, end_at  = 时间区间;支持 RFC3339、"2006-01-02 15:04:05"、"2006-01-02"
+//
+//	limit(默认 20,上限 100), offset
+//	status            = queued | dispatched | running | success | failed
+//	keyword           = prompt 模糊匹配
+//	start_at, end_at  = 时间区间;支持 RFC3339、"2006-01-02 15:04:05"、"2006-01-02"
 func (h *MeHandler) List(c *gin.Context) {
 	uid := middleware.UserID(c)
 	if uid == 0 {
 		resp.Unauthorized(c, "not logged in")
+		return
+	}
+	if _, err := h.dao.MarkAllStaleFailed(c.Request.Context(),
+		time.Now().Add(-imageTaskListStaleAfter),
+		ErrPollTimeout,
+		"image task exceeded runner timeout; marked failed by task list cleanup",
+	); err != nil {
+		resp.Internal(c, err.Error())
 		return
 	}
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
@@ -125,6 +134,8 @@ func (h *MeHandler) List(c *gin.Context) {
 		"offset": offset,
 	})
 }
+
+const imageTaskListStaleAfter = 10 * time.Minute
 
 // parseFilterTime 兼容前端常见的几种时间字面量写法,所有字符串都按
 // 服务器本地时区解析,匹配 image_tasks.created_at 的 DATETIME 语义。

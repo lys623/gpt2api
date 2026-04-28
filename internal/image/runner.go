@@ -847,6 +847,9 @@ func isImageRejectionMessage(s string) bool {
 	if s == "" {
 		return false
 	}
+	if isImageHandoffMessage(s) {
+		return true
+	}
 	keywords := []string{
 		"抱歉", "无法", "不能", "不可以", "违反", "防护", "限制", "政策",
 		"sorry", "can't", "cannot", "unable", "not able", "policy", "safety",
@@ -857,6 +860,15 @@ func isImageRejectionMessage(s string) bool {
 		}
 	}
 	return false
+}
+
+func isImageHandoffMessage(s string) bool {
+	return (strings.Contains(s, "looks like you've uploaded an image") ||
+		strings.Contains(s, "you've uploaded an image") ||
+		strings.Contains(s, "uploaded an image")) &&
+		(strings.Contains(s, "would you like to modify") ||
+			strings.Contains(s, "generate a new image based on it") ||
+			strings.Contains(s, "how can i assist you with it"))
 }
 
 func assistantFailureCode(message, fallback string) string {

@@ -23,6 +23,14 @@ func NewAdminHandler(dao *DAO) *AdminHandler {
 // List GET /api/admin/image-tasks
 // 查询参数:page / page_size / user_id / keyword(prompt 或邮箱模糊) / status
 func (h *AdminHandler) List(c *gin.Context) {
+	if _, err := h.dao.MarkAllStaleFailed(c.Request.Context(),
+		time.Now().Add(-imageTaskListStaleAfter),
+		ErrPollTimeout,
+		"image task exceeded runner timeout; marked failed by admin task list cleanup",
+	); err != nil {
+		resp.Internal(c, err.Error())
+		return
+	}
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	if page < 1 {
 		page = 1
