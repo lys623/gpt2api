@@ -506,6 +506,15 @@ func (s *Scheduler) tryLock(ctx context.Context, acc *account.Account) (*Lease, 
 		}
 	}
 
+	if acc.Status == account.StatusThrottled {
+		if err := s.accSvc.DAO().SetStatus(ctx, acc.ID, account.StatusHealthy, nil); err != nil {
+			logger.L().Warn("scheduler restore throttled account failed",
+				zap.Uint64("account_id", acc.ID), zap.Error(err))
+		} else {
+			acc.Status = account.StatusHealthy
+		}
+	}
+
 	accCopy := acc
 	lease := &Lease{
 		Account:   accCopy,

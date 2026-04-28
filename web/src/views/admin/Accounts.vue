@@ -296,23 +296,23 @@ async function onDelete(row: accountApi.Account) {
 }
 
 async function onPauseToggle(row: accountApi.Account) {
-  const paused = row.status === 'paused'
-  const action = paused ? '恢复' : '暂停'
+  const restorable = row.status === 'paused' || row.status === 'throttled'
+  const action = restorable ? '恢复' : '暂停'
   try {
     await ElMessageBox.confirm(
-      paused
+      restorable
         ? `确认恢复账号「${row.email}」?恢复后会重新参与调度。`
         : `确认暂停账号「${row.email}」?暂停不会中断正在执行的任务,但后续不会再分配新任务。`,
       `${action}账号`,
       {
         confirmButtonText: action,
         cancelButtonText: '取消',
-        type: paused ? 'info' : 'warning',
+        type: restorable ? 'info' : 'warning',
       },
     )
   } catch { return }
   try {
-    if (paused) {
+    if (restorable) {
       await accountApi.resumeAccount(row.id)
     } else {
       await accountApi.pauseAccount(row.id)
@@ -956,10 +956,10 @@ onMounted(() => {
           <template #default="{ row }">
             <el-button
               link
-              :type="row.status === 'paused' ? 'success' : 'warning'"
+              :type="row.status === 'paused' || row.status === 'throttled' ? 'success' : 'warning'"
               size="small"
               @click="onPauseToggle(row)"
-            >{{ row.status === 'paused' ? '恢复' : '暂停' }}</el-button>
+            >{{ row.status === 'paused' || row.status === 'throttled' ? '恢复' : '暂停' }}</el-button>
             <el-button
               link type="primary" size="small"
               :loading="refreshingIds.has(row.id)"

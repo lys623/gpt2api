@@ -128,19 +128,20 @@ func (d *DAO) List(ctx context.Context, status string, keyword string, offset, l
 
 // ListDispatchable 调度器专用:返回 AT 有效且 cooldown 到期的候选账号。
 //
-// 接受 status IN ('healthy', 'warned'):
+// 接受 status IN ('healthy', 'warned', 'throttled'):
 //   - healthy: 正常
 //   - warned:  RT/ST 刷新失败但 AT 尚未到期,仍可继续出图直到 AT 过期
+//   - throttled: 上游限流冷却已到期后重新进入候选池
 func (d *DAO) ListDispatchable(ctx context.Context, limit int) ([]*Account, error) {
 	rows := make([]*Account, 0, limit)
 	now := time.Now()
 	err := d.db.SelectContext(ctx, &rows,
 		`SELECT * FROM oai_accounts
-         WHERE deleted_at IS NULL AND status IN ('healthy', 'warned')
+         WHERE deleted_at IS NULL AND status IN ('healthy', 'warned', 'throttled')
            AND (cooldown_until IS NULL OR cooldown_until <= ?)
            AND (token_expires_at IS NULL OR token_expires_at > ?)
          ORDER BY
-           CASE status WHEN 'healthy' THEN 0 ELSE 1 END,
+           CASE status WHEN 'healthy' THEN 0 WHEN 'throttled' THEN 1 ELSE 2 END,
            CASE WHEN last_used_at IS NULL THEN 0 ELSE 1 END,
            last_used_at ASC
          LIMIT ?`, now, now, limit)
@@ -164,24 +165,24 @@ func (d *DAO) DispatchableDiagnostics(ctx context.Context) (*DispatchableDiagnos
 	err := d.db.GetContext(ctx, &out,
 		`SELECT
            COUNT(*) AS active_accounts,
-           COALESCE(SUM(CASE WHEN status IN ('healthy', 'warned') THEN 1 ELSE 0 END), 0) AS status_eligible,
-           COALESCE(SUM(CASE WHEN status NOT IN ('healthy', 'warned') THEN 1 ELSE 0 END), 0) AS status_blocked,
-           COALESCE(SUM(CASE
-             WHEN status IN ('healthy', 'warned')
-              AND cooldown_until IS NOT NULL
-              AND cooldown_until > ?
-             THEN 1 ELSE 0 END), 0) AS cooldown_blocked,
-           COALESCE(SUM(CASE
-             WHEN status IN ('healthy', 'warned')
-              AND (cooldown_until IS NULL OR cooldown_until <= ?)
-              AND token_expires_at IS NOT NULL
-              AND token_expires_at <= ?
-             THEN 1 ELSE 0 END), 0) AS token_expired,
-           COALESCE(SUM(CASE
-             WHEN status IN ('healthy', 'warned')
-              AND (cooldown_until IS NULL OR cooldown_until <= ?)
-              AND (token_expires_at IS NULL OR token_expires_at > ?)
-             THEN 1 ELSE 0 END), 0) AS dispatchable
+	           COALESCE(SUM(CASE WHEN status IN ('healthy', 'warned', 'throttled') THEN 1 ELSE 0 END), 0) AS status_eligible,
+	           COALESCE(SUM(CASE WHEN status NOT IN ('healthy', 'warned', 'throttled') THEN 1 ELSE 0 END), 0) AS status_blocked,
+	           COALESCE(SUM(CASE
+	             WHEN status IN ('healthy', 'warned', 'throttled')
+	              AND cooldown_until IS NOT NULL
+	              AND cooldown_until > ?
+	             THEN 1 ELSE 0 END), 0) AS cooldown_blocked,
+	           COALESCE(SUM(CASE
+	             WHEN status IN ('healthy', 'warned', 'throttled')
+	              AND (cooldown_until IS NULL OR cooldown_until <= ?)
+	              AND token_expires_at IS NOT NULL
+	              AND token_expires_at <= ?
+	             THEN 1 ELSE 0 END), 0) AS token_expired,
+	           COALESCE(SUM(CASE
+	             WHEN status IN ('healthy', 'warned', 'throttled')
+	              AND (cooldown_until IS NULL OR cooldown_until <= ?)
+	              AND (token_expires_at IS NULL OR token_expires_at > ?)
+	             THEN 1 ELSE 0 END), 0) AS dispatchable
          FROM oai_accounts
          WHERE deleted_at IS NULL`, now, now, now, now, now)
 	if err != nil {
