@@ -90,6 +90,7 @@ const BULK_DELETE_LABELS: Record<string, string> = {
   suspicious: '可疑 / 已封账号',
   warned:     '风险账号',
   throttled:  '限流账号',
+  paused:     '暂停账号',
   all:        '全部账号',
 }
 async function onBulkDelete(scope: accountApi.BulkDeleteScope) {
@@ -137,6 +138,7 @@ const statusMap: Record<string, { label: string; type: TagType }> = {
   warned:     { label: '风险',   type: 'warning' },
   throttled:  { label: '限流',   type: 'warning' },
   suspicious: { label: '可疑',   type: 'info'    },
+  paused:     { label: '暂停',   type: 'info'    },
   dead:       { label: '失效',   type: 'danger'  },
 }
 function statusText(s: string): string { return statusMap[s]?.label || s || '-' }
@@ -290,6 +292,35 @@ async function onDelete(row: accountApi.Account) {
     fetchList()
   } catch (e: any) {
     ElMessage.error(e?.message || '删除失败')
+  }
+}
+
+async function onPauseToggle(row: accountApi.Account) {
+  const paused = row.status === 'paused'
+  const action = paused ? '恢复' : '暂停'
+  try {
+    await ElMessageBox.confirm(
+      paused
+        ? `确认恢复账号「${row.email}」?恢复后会重新参与调度。`
+        : `确认暂停账号「${row.email}」?暂停不会中断正在执行的任务,但后续不会再分配新任务。`,
+      `${action}账号`,
+      {
+        confirmButtonText: action,
+        cancelButtonText: '取消',
+        type: paused ? 'info' : 'warning',
+      },
+    )
+  } catch { return }
+  try {
+    if (paused) {
+      await accountApi.resumeAccount(row.id)
+    } else {
+      await accountApi.pauseAccount(row.id)
+    }
+    ElMessage.success(`已${action}`)
+    fetchList()
+  } catch (e: any) {
+    ElMessage.error(e?.message || `${action}失败`)
   }
 }
 
@@ -735,6 +766,7 @@ onMounted(() => {
                 <el-dropdown-item command="suspicious">删除可疑/已封账号</el-dropdown-item>
                 <el-dropdown-item command="warned">删除风险账号</el-dropdown-item>
                 <el-dropdown-item command="throttled">删除限流账号</el-dropdown-item>
+                <el-dropdown-item command="paused">删除暂停账号</el-dropdown-item>
                 <el-dropdown-item divided command="all">
                   <span style="color: var(--el-color-danger)">删除全部账号</span>
                 </el-dropdown-item>
@@ -757,6 +789,7 @@ onMounted(() => {
             <el-option label="风险" value="warned" />
             <el-option label="限流" value="throttled" />
             <el-option label="可疑" value="suspicious" />
+            <el-option label="暂停" value="paused" />
             <el-option label="失效" value="dead" />
           </el-select>
         </el-form-item>
@@ -776,7 +809,7 @@ onMounted(() => {
         <el-form-item class="auto-refresh-item">
           <el-tooltip
             placement="top"
-            content="开启后:AT 距离过期 < 1 天的账号会被后台自动续期;状态为「失效 / 可疑」的账号不会刷新"
+            content="开启后:AT 距离过期 < 1 天的账号会被后台自动续期;状态为「失效 / 可疑 / 暂停」的账号不会刷新"
           >
             <el-checkbox
               v-model="autoRefreshEnabled"
@@ -919,8 +952,14 @@ onMounted(() => {
             </el-tooltip>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="240" fixed="right">
+        <el-table-column label="操作" width="282" fixed="right">
           <template #default="{ row }">
+            <el-button
+              link
+              :type="row.status === 'paused' ? 'success' : 'warning'"
+              size="small"
+              @click="onPauseToggle(row)"
+            >{{ row.status === 'paused' ? '恢复' : '暂停' }}</el-button>
             <el-button
               link type="primary" size="small"
               :loading="refreshingIds.has(row.id)"
@@ -1052,6 +1091,7 @@ onMounted(() => {
             <el-option label="风险"  value="warned" />
             <el-option label="限流"  value="throttled" />
             <el-option label="可疑"  value="suspicious" />
+            <el-option label="暂停"  value="paused" />
             <el-option label="失效"  value="dead" />
           </el-select>
         </el-form-item>

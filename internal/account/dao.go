@@ -198,7 +198,7 @@ func (d *DAO) ListNeedRefresh(ctx context.Context, aheadSec int, limit int) ([]*
 	err := d.db.SelectContext(ctx, &rows,
 		`SELECT * FROM oai_accounts
          WHERE deleted_at IS NULL
-           AND status <> 'dead'
+           AND status NOT IN ('dead', 'suspicious', 'paused')
            AND (refresh_token_enc IS NOT NULL OR session_token_enc IS NOT NULL)
            AND token_expires_at IS NOT NULL
            AND token_expires_at <= ?

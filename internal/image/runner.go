@@ -308,7 +308,9 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 	// 回退到单步接口)
 	cr, err := cli.ChatRequirementsV2(ctx)
 	if err != nil {
-		return false, r.classifyUpstream(err), err
+		code := r.classifyUpstream(err)
+		r.markAccountForUpstreamCode(code, lease.Account.ID)
+		return false, code, err
 	}
 	var proofToken string
 	if cr.Proofofwork.Required {
@@ -358,6 +360,10 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 				if ue, ok := err.(*chatgpt.UpstreamError); ok && ue.IsRateLimited() {
 					r.sched.MarkRateLimited(context.Background(), lease.Account.ID)
 					return false, ErrRateLimited, err
+				}
+				if ue, ok := err.(*chatgpt.UpstreamError); ok && ue.IsUnauthorized() {
+					r.sched.MarkDead(context.Background(), lease.Account.ID)
+					return false, ErrAuthRequired, err
 				}
 				return false, ErrUpstream, fmt.Errorf("upload reference %d: %w", idx, err)
 			}
@@ -410,6 +416,9 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 	} else if ue, ok := err.(*chatgpt.UpstreamError); ok && ue.IsRateLimited() {
 		r.sched.MarkRateLimited(context.Background(), lease.Account.ID)
 		return false, ErrRateLimited, err
+	} else if ue, ok := err.(*chatgpt.UpstreamError); ok && ue.IsUnauthorized() {
+		r.sched.MarkDead(context.Background(), lease.Account.ID)
+		return false, ErrAuthRequired, err
 	}
 
 	// f/conversation SSE
@@ -447,9 +456,7 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 				zap.String("body", truncate(ue.Body, 500)))
 		}
 		code := r.classifyUpstream(err)
-		if code == ErrRateLimited {
-			r.sched.MarkRateLimited(context.Background(), lease.Account.ID)
-		}
+		r.markAccountForUpstreamCode(code, lease.Account.ID)
 		return false, code, err
 	}
 	sseResult = chatgpt.ParseImageSSE(stream)
@@ -513,7 +520,7 @@ afterSSE:
 	} else if convID == "" {
 		if len(fileRefs) == 0 {
 			if msg := strings.TrimSpace(sseResult.AssistantText); msg != "" {
-				return false, assistantFailureCode(msg, ErrInvalidResponse), errors.New(msg)
+				return r.failWithAssistantMessage(lease.Account.ID, msg, ErrInvalidResponse)
 			}
 			return false, ErrInvalidResponse, errors.New("upstream returned no conversation_id and no image ref")
 		}
@@ -577,21 +584,17 @@ afterSSE:
 			}
 		case chatgpt.PollStatusTimeout:
 			if msg := firstFilled(assistantText, sseResult.AssistantText); msg != "" {
-				return false, assistantFailureCode(msg, ErrPollTimeout), errors.New(msg)
+				return r.failWithAssistantMessage(lease.Account.ID, msg, ErrPollTimeout)
 			}
 			return false, ErrPollTimeout, errors.New("poll timeout without any image")
 		case chatgpt.PollStatusRejected:
 			if msg := firstFilled(assistantText, sseResult.AssistantText); msg != "" {
-				return false, ErrUpstreamRejected, errors.New(msg)
+				return r.failWithAssistantMessage(lease.Account.ID, msg, ErrUpstreamRejected)
 			}
 			return false, ErrUpstreamRejected, errors.New("upstream rejected image generation")
 		default:
 			if msg := firstFilled(assistantText, sseResult.AssistantText); msg != "" {
-				code := assistantFailureCode(msg, ErrUpstream)
-				if code == ErrRateLimited {
-					r.sched.MarkRateLimited(context.Background(), lease.Account.ID)
-				}
-				return false, code, errors.New(msg)
+				return r.failWithAssistantMessage(lease.Account.ID, msg, ErrUpstream)
 			}
 			return false, ErrUpstream, errors.New("poll error")
 		}
@@ -599,7 +602,7 @@ afterSSE:
 
 	if len(fileRefs) == 0 {
 		if msg := strings.TrimSpace(sseResult.AssistantText); msg != "" {
-			return false, assistantFailureCode(msg, ErrUpstream), errors.New(msg)
+			return r.failWithAssistantMessage(lease.Account.ID, msg, ErrUpstream)
 		}
 		return false, ErrUpstream, errors.New("no image ref produced")
 	}
@@ -727,6 +730,24 @@ func (r *Runner) classifyUpstream(err error) string {
 		return ErrNetworkTransient
 	}
 	return ErrUpstream
+}
+
+func (r *Runner) failWithAssistantMessage(accountID uint64, message, fallback string) (bool, string, error) {
+	code := assistantFailureCode(message, fallback)
+	r.markAccountForUpstreamCode(code, accountID)
+	return false, code, errors.New(message)
+}
+
+func (r *Runner) markAccountForUpstreamCode(code string, accountID uint64) {
+	if r == nil || r.sched == nil || accountID == 0 {
+		return
+	}
+	switch code {
+	case ErrRateLimited:
+		r.sched.MarkRateLimited(context.Background(), accountID)
+	case ErrAuthRequired:
+		r.sched.MarkDead(context.Background(), accountID)
+	}
 }
 
 func runnerErrorMessage(err error) string {
@@ -859,6 +880,10 @@ func isRateLimitMessage(message string) bool {
 	if strings.Contains(s, "too many requests") ||
 		strings.Contains(s, "rate limited") ||
 		strings.Contains(s, "rate limit") ||
+		strings.Contains(s, "plus plan limit") ||
+		strings.Contains(s, "limit resets") ||
+		strings.Contains(s, "create more images when the limit resets") ||
+		(strings.Contains(s, "image generation requests") && strings.Contains(s, "limit")) ||
 		strings.Contains(s, "http=429") ||
 		strings.Contains(s, "status=429") {
 		return true

@@ -221,7 +221,29 @@ func (s *Service) Delete(ctx context.Context, id uint64) error {
 	return s.dao.SoftDelete(ctx, id)
 }
 
-// BulkDeleteByStatus 批量软删;status 支持 dead / suspicious / warned / throttled / all。
+// Pause 人工暂停账号调度。不会中断已经持有 lease 的请求,但后续调度不会再选中。
+func (s *Service) Pause(ctx context.Context, id uint64) (*Account, error) {
+	if _, err := s.dao.GetByID(ctx, id); err != nil {
+		return nil, err
+	}
+	if err := s.dao.SetStatus(ctx, id, StatusPaused, nil); err != nil {
+		return nil, err
+	}
+	return s.dao.GetByID(ctx, id)
+}
+
+// Resume 将人工暂停的账号恢复为健康状态并清空 cooldown。
+func (s *Service) Resume(ctx context.Context, id uint64) (*Account, error) {
+	if _, err := s.dao.GetByID(ctx, id); err != nil {
+		return nil, err
+	}
+	if err := s.dao.SetStatus(ctx, id, StatusHealthy, nil); err != nil {
+		return nil, err
+	}
+	return s.dao.GetByID(ctx, id)
+}
+
+// BulkDeleteByStatus 批量软删;status 支持 dead / suspicious / warned / throttled / paused / all。
 func (s *Service) BulkDeleteByStatus(ctx context.Context, status string) (int64, error) {
 	if status == "all" {
 		return s.dao.SoftDeleteByStatus(ctx, "")

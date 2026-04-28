@@ -32,20 +32,20 @@ type Deps struct {
 	AuthH *auth.Handler
 	UserH *user.Handler
 
-	KeySvc     *apikey.Service
-	KeyH       *apikey.Handler
-	ProxyH     *proxy.Handler
-	AccountH   *account.Handler
-	ChannelH   *channel.Handler
+	KeySvc   *apikey.Service
+	KeyH     *apikey.Handler
+	ProxyH   *proxy.Handler
+	AccountH *account.Handler
+	ChannelH *channel.Handler
 
 	GatewayH *gateway.Handler
 	ImagesH  *gateway.ImagesHandler
 
-	BackupH      *backup.Handler
-	AuditH       *audit.Handler
-	AuditDAO     *audit.DAO
-	AdminUserH   *user.AdminHandler
-	AdminGroupH  *user.AdminGroupHandler
+	BackupH     *backup.Handler
+	AuditH      *audit.Handler
+	AuditDAO    *audit.DAO
+	AdminUserH  *user.AdminHandler
+	AdminGroupH *user.AdminGroupHandler
 
 	AdminModelH *model.AdminHandler
 	AdminKeyH   *apikey.AdminHandler
@@ -203,6 +203,8 @@ func New(d *Deps) *gin.Engine {
 				ag.GET("/:id/secrets", middleware.RequirePerm(rbac.PermAccountWrite), d.AccountH.GetSecrets)
 				ag.PATCH("/:id", middleware.RequirePerm(rbac.PermAccountWrite), d.AccountH.Update)
 				ag.DELETE("/:id", middleware.RequirePerm(rbac.PermAccountWrite), d.AccountH.Delete)
+				ag.POST("/:id/pause", middleware.RequirePerm(rbac.PermAccountWrite), d.AccountH.Pause)
+				ag.POST("/:id/resume", middleware.RequirePerm(rbac.PermAccountWrite), d.AccountH.Resume)
 				ag.POST("/:id/refresh", middleware.RequirePerm(rbac.PermAccountWrite), d.AccountH.Refresh)
 				ag.POST("/:id/probe-quota", middleware.RequirePerm(rbac.PermAccountWrite), d.AccountH.ProbeQuota)
 				ag.POST("/:id/bind-proxy", middleware.RequirePerm(rbac.PermAccountWrite), d.AccountH.BindProxy)

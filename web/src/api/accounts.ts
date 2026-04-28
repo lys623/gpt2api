@@ -10,7 +10,7 @@ export interface Account {
   oai_device_id: string
   plan_type: string               // plus / team / free / ...
   daily_image_quota: number
-  status: string                  // healthy / warned / throttled / suspicious / dead
+  status: string                  // healthy / warned / throttled / suspicious / paused / dead
   today_used_count: number
   notes: string
   token_expires_at?: { Time: string; Valid: boolean } | string | null
@@ -88,6 +88,12 @@ export function updateAccount(id: number, body: AccountUpdate) {
 }
 export function deleteAccount(id: number) {
   return http.delete<any, { deleted: number }>(`/api/admin/accounts/${id}`)
+}
+export function pauseAccount(id: number) {
+  return http.post<any, Account>(`/api/admin/accounts/${id}/pause`)
+}
+export function resumeAccount(id: number) {
+  return http.post<any, Account>(`/api/admin/accounts/${id}/resume`)
 }
 export function bindProxy(id: number, proxyID: number) {
   return http.post(`/api/admin/accounts/${id}/bind-proxy`, { proxy_id: proxyID })
@@ -228,7 +234,7 @@ export function setAutoRefresh(enabled: boolean) {
 }
 
 // ---------- 批量删除 ----------
-export type BulkDeleteScope = 'dead' | 'suspicious' | 'warned' | 'throttled' | 'all'
+export type BulkDeleteScope = 'dead' | 'suspicious' | 'warned' | 'throttled' | 'paused' | 'all'
 export function bulkDeleteAccounts(scope: BulkDeleteScope) {
   return http.post<any, { deleted: number; scope: string }>(
     '/api/admin/accounts/bulk-delete', { scope },

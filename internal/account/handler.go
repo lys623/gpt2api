@@ -130,6 +130,28 @@ func (h *Handler) Delete(c *gin.Context) {
 	resp.OK(c, gin.H{"deleted": id})
 }
 
+// POST /api/admin/accounts/:id/pause
+func (h *Handler) Pause(c *gin.Context) {
+	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+	a, err := h.svc.Pause(c.Request.Context(), id)
+	if err != nil {
+		resp.Internal(c, err.Error())
+		return
+	}
+	resp.OK(c, a)
+}
+
+// POST /api/admin/accounts/:id/resume
+func (h *Handler) Resume(c *gin.Context) {
+	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+	a, err := h.svc.Resume(c.Request.Context(), id)
+	if err != nil {
+		resp.Internal(c, err.Error())
+		return
+	}
+	resp.OK(c, a)
+}
+
 // GET /api/admin/accounts/:id/secrets
 // 仅管理员可用,返回 AT / RT / ST 明文用于编辑弹窗回显。
 func (h *Handler) GetSecrets(c *gin.Context) {
@@ -143,7 +165,7 @@ func (h *Handler) GetSecrets(c *gin.Context) {
 }
 
 // POST /api/admin/accounts/bulk-delete
-// body: { "scope": "dead" | "suspicious" | "warned" | "throttled" | "all" }
+// body: { "scope": "dead" | "suspicious" | "warned" | "throttled" | "paused" | "all" }
 // 批量软删指定状态的账号;scope=all 时删除全部(调用方需二次确认)。
 func (h *Handler) BulkDelete(c *gin.Context) {
 	var req struct {
@@ -155,10 +177,10 @@ func (h *Handler) BulkDelete(c *gin.Context) {
 	}
 	scope := strings.ToLower(strings.TrimSpace(req.Scope))
 	allowed := map[string]bool{
-		"dead": true, "suspicious": true, "warned": true, "throttled": true, "all": true,
+		"dead": true, "suspicious": true, "warned": true, "throttled": true, "paused": true, "all": true,
 	}
 	if !allowed[scope] {
-		resp.BadRequest(c, "scope 仅支持 dead / suspicious / warned / throttled / all")
+		resp.BadRequest(c, "scope 仅支持 dead / suspicious / warned / throttled / paused / all")
 		return
 	}
 	n, err := h.svc.BulkDeleteByStatus(c.Request.Context(), scope)

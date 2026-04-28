@@ -67,6 +67,14 @@ func TestAssistantFailureCodeClassifiesPoll429AsRateLimited(t *testing.T) {
 	}
 }
 
+func TestAssistantFailureCodeClassifiesPlusPlanLimitAsRateLimited(t *testing.T) {
+	msg := "You've hit the plus plan limit for image generation requests. You can create more images when the limit resets in 1 hour and 11 minutes."
+	got := assistantFailureCode(msg, ErrUpstream)
+	if got != ErrRateLimited {
+		t.Fatalf("assistantFailureCode(plus plan limit) = %q, want %q", got, ErrRateLimited)
+	}
+}
+
 func TestSkippedMainlineIsNotClassifiedAsRejected(t *testing.T) {
 	err := &chatgpt.UpstreamError{Status: 400, Message: "f/conversation failed", Body: `{"skipped_mainline":true}`}
 	var r Runner

@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -32,7 +33,15 @@ type noAvailableError struct {
 	stats dispatchSkipStats
 }
 
-func (e *noAvailableError) Error() string { return ErrNoAvailable.Error() }
+func (e *noAvailableError) Error() string {
+	if e == nil {
+		return ErrNoAvailable.Error()
+	}
+	if summary := e.stats.summary(); summary != "" {
+		return ErrNoAvailable.Error() + ": " + summary
+	}
+	return ErrNoAvailable.Error()
+}
 func (e *noAvailableError) Unwrap() error { return ErrNoAvailable }
 
 type dispatchSkipStats struct {
@@ -69,6 +78,36 @@ func (s *dispatchSkipStats) addSample(sample dispatchSkipSample) {
 		return
 	}
 	s.Samples = append(s.Samples, sample)
+}
+
+func (s dispatchSkipStats) summary() string {
+	parts := []string{fmt.Sprintf("candidates=%d", s.CandidateCount)}
+	if s.SkippedInterval > 0 {
+		parts = append(parts, fmt.Sprintf("min_interval=%d", s.SkippedInterval))
+	}
+	if s.SkippedQuota > 0 {
+		parts = append(parts, fmt.Sprintf("quota_exhausted=%d", s.SkippedQuota))
+	}
+	if s.SkippedDailyLimit > 0 {
+		parts = append(parts, fmt.Sprintf("daily_limit=%d", s.SkippedDailyLimit))
+	}
+	if s.DeprioritizedQuota > 0 {
+		parts = append(parts, fmt.Sprintf("deprioritized=%d", s.DeprioritizedQuota))
+	}
+	if s.SkippedLockBusy > 0 {
+		parts = append(parts, fmt.Sprintf("lock_busy=%d", s.SkippedLockBusy))
+	}
+	if s.SkippedLockErr > 0 {
+		parts = append(parts, fmt.Sprintf("lock_error=%d", s.SkippedLockErr))
+	}
+	if len(s.Samples) > 0 {
+		samples := make([]string, 0, len(s.Samples))
+		for _, sample := range s.Samples {
+			samples = append(samples, fmt.Sprintf("acct%d:%s", sample.AccountID, sample.Reason))
+		}
+		parts = append(parts, "samples="+strings.Join(samples, ","))
+	}
+	return strings.Join(parts, " ")
 }
 
 // Lease 代表一次账号占用的租约。
@@ -223,7 +262,7 @@ func (s *Scheduler) Dispatch(ctx context.Context, modelType string) (*Lease, err
 		// 所有候选都忙或不就绪:排队等待。
 		if !time.Now().Before(deadline) {
 			s.logNoAvailable(ctx, modelType, attempt, start, lastNoAvailable)
-			return nil, ErrNoAvailable
+			return nil, noAvailableOrDefault(lastNoAvailable)
 		}
 		wait := backoff
 		if remain := time.Until(deadline); remain < wait {
@@ -231,7 +270,7 @@ func (s *Scheduler) Dispatch(ctx context.Context, modelType string) (*Lease, err
 		}
 		if wait <= 0 {
 			s.logNoAvailable(ctx, modelType, attempt, start, lastNoAvailable)
-			return nil, ErrNoAvailable
+			return nil, noAvailableOrDefault(lastNoAvailable)
 		}
 		select {
 		case <-ctx.Done():
@@ -244,6 +283,13 @@ func (s *Scheduler) Dispatch(ctx context.Context, modelType string) (*Lease, err
 			backoff = maxBackoff
 		}
 	}
+}
+
+func noAvailableOrDefault(err *noAvailableError) error {
+	if err != nil {
+		return err
+	}
+	return ErrNoAvailable
 }
 
 // tryDispatchOnce 扫一遍 candidate,尝试为其中一个加锁;
@@ -536,9 +582,14 @@ func effectiveDailyQuota(acc *account.Account) int {
 	return acc.ImageQuotaTotal
 }
 
-func isImageQuotaExhausted(acc *account.Account, now time.Time) bool {
+func isImageQuotaExhausted(acc *account.Account, _ time.Time) bool {
 	if acc == nil || !acc.ImageQuotaUpdatedAt.Valid || acc.ImageQuotaRemaining > 0 {
 		return false
 	}
-	return acc.ImageQuotaResetAt.Valid && acc.ImageQuotaResetAt.Time.After(now)
+	// Once the quota probe has observed zero, do not dispatch this account again
+	// until a later probe records a positive remaining value. ListNeedProbeQuota
+	// already prioritizes zero-quota accounts whose reset time is absent or due,
+	// so dispatching stale zeroes only burns user requests on known-exhausted
+	// accounts.
+	return acc.ImageQuotaRemaining == 0
 }

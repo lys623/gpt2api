@@ -303,9 +303,9 @@ func (q *QuotaProber) doProbe(ctx context.Context, a *Account, accessToken strin
 	}
 
 	var payload struct {
-		Type             string   `json:"type"`
-		BlockedFeatures  []string `json:"blocked_features"`
-		DefaultModelSlug string   `json:"default_model_slug"`
+		Type             string             `json:"type"`
+		BlockedFeatures  flexibleStringList `json:"blocked_features"`
+		DefaultModelSlug string             `json:"default_model_slug"`
 		LimitsProgress   []struct {
 			FeatureName string `json:"feature_name"`
 			Remaining   *int   `json:"remaining"`
@@ -322,7 +322,7 @@ func (q *QuotaProber) doProbe(ctx context.Context, a *Account, accessToken strin
 		return
 	}
 	out.defaultModel = payload.DefaultModelSlug
-	out.blockedFeatures = payload.BlockedFeatures
+	out.blockedFeatures = []string(payload.BlockedFeatures)
 
 	for _, item := range payload.LimitsProgress {
 		if !isImageFeature(item.FeatureName) {
@@ -366,6 +366,55 @@ func (q *QuotaProber) doProbe(ctx context.Context, a *Account, accessToken strin
 		}
 	}
 	return
+}
+
+type flexibleStringList []string
+
+func (l *flexibleStringList) UnmarshalJSON(data []byte) error {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 || bytes.Equal(data, []byte("null")) {
+		*l = nil
+		return nil
+	}
+	if len(data) > 0 && data[0] == '[' {
+		var items []json.RawMessage
+		if err := json.Unmarshal(data, &items); err != nil {
+			return err
+		}
+		out := make([]string, 0, len(items))
+		for _, item := range items {
+			if s := featureNameFromJSON(item); s != "" {
+				out = append(out, s)
+			}
+		}
+		*l = out
+		return nil
+	}
+	if s := featureNameFromJSON(data); s != "" {
+		*l = []string{s}
+	} else {
+		*l = nil
+	}
+	return nil
+}
+
+func featureNameFromJSON(data []byte) string {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		return strings.TrimSpace(s)
+	}
+	var obj map[string]interface{}
+	if err := json.Unmarshal(data, &obj); err == nil {
+		for _, key := range []string{"feature_name", "feature", "name", "code", "type", "slug", "id"} {
+			if v, _ := obj[key].(string); strings.TrimSpace(v) != "" {
+				return strings.TrimSpace(v)
+			}
+		}
+		if b, err := json.Marshal(obj); err == nil {
+			return string(b)
+		}
+	}
+	return ""
 }
 
 // pickInt 返回第一个非 nil 的指针指向的值。
