@@ -156,11 +156,17 @@ export function listMyImageTasks(params: {
   start_at?: string
   end_at?: string
 } = {}): Promise<{ items: ImageTask[]; total?: number; limit: number; offset: number }> {
-  return http.get('/api/me/images/tasks', { params })
+  return http.get('/api/me/images/tasks', {
+    params: { ...params, _: Date.now() },
+    headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
+  })
 }
 
 export function getMyImageTask(taskID: string): Promise<ImageTask> {
-  return http.get(`/api/me/images/tasks/${taskID}`)
+  return http.get(`/api/me/images/tasks/${taskID}`, {
+    params: { _: Date.now() },
+    headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
+  })
 }
 
 // ===============================================================

@@ -678,6 +678,8 @@ func normalizeRecoveredImageRef(ref string) string {
 
 // ImageTask GET /v1/images/tasks/:id。
 func (h *ImagesHandler) ImageTask(c *gin.Context) {
+	setImageTaskPollNoStore(c)
+
 	ak, ok := apikey.FromCtx(c)
 	if !ok {
 		openAIError(c, http.StatusUnauthorized, "missing_api_key", "缺少 API Key")
@@ -745,6 +747,12 @@ func (h *ImagesHandler) ImageTask(c *gin.Context) {
 		"credit_cost":     t.CreditCost,
 		"data":            data,
 	})
+}
+
+func setImageTaskPollNoStore(c *gin.Context) {
+	c.Header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+	c.Header("Pragma", "no-cache")
+	c.Header("Expires", "0")
 }
 
 // handleChatAsImage 是 /v1/chat/completions 发现 model.type=image 时的转派点。

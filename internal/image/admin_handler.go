@@ -23,6 +23,8 @@ func NewAdminHandler(dao *DAO) *AdminHandler {
 // List GET /api/admin/image-tasks
 // 查询参数:page / page_size / user_id / keyword(prompt 或邮箱模糊) / status
 func (h *AdminHandler) List(c *gin.Context) {
+	setImageTaskNoStore(c)
+
 	if _, err := h.dao.MarkAllStaleFailed(c.Request.Context(),
 		time.Now().Add(-imageTaskListStaleAfter),
 		ErrPollTimeout,

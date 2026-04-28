@@ -54,7 +54,10 @@ async function fetchList() {
       params.start_at = filter.range[0]
       params.end_at = filter.range[1]
     }
-    const d = await http.get<any, any>('/api/admin/image-tasks', { params })
+    const d = await http.get<any, any>('/api/admin/image-tasks', {
+      params: { ...params, _: Date.now() },
+      headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
+    })
     rows.value = d.list || []
     total.value = d.total || 0
   } finally {

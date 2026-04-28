@@ -41,9 +41,9 @@ security:
 
 # 账号池调度
 scheduler:
-  min_interval_sec: 60
+  min_interval_sec: 20
   daily_usage_ratio: 0.6          # 单号日消耗降优先级阈值
-  lock_ttl_sec: 1200
+  lock_ttl_sec: 600
   cooldown_429_sec: 600           # 连续 429 冷却
   warned_pause_hours: 24
 

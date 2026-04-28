@@ -592,9 +592,9 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=32) as ex:
 
 ```yaml
 scheduler:
-  min_interval_sec: 60          # 单账号最小间隔秒(对抗同号高频 → 429)
+  min_interval_sec: 20          # 单账号最小间隔秒(对抗同号高频 → 429)
   daily_usage_ratio: 0.6        # 单号日配额消耗超过 60% 自动熔断下线
-  lock_ttl_sec: 1200            # Redis 账号锁 TTL,lease 超时自动释放
+  lock_ttl_sec: 600             # Redis 账号锁 TTL,lease 超时自动释放
   cooldown_429_sec: 600         # 连续 429 时该账号冷却时间
   warned_pause_hours: 24        # 收到"警告页"后的账号强制停用时长
 ```

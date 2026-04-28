@@ -20,6 +20,12 @@ type MeHandler struct{ dao *DAO }
 // NewMeHandler 构造。
 func NewMeHandler(dao *DAO) *MeHandler { return &MeHandler{dao: dao} }
 
+func setImageTaskNoStore(c *gin.Context) {
+	c.Header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+	c.Header("Pragma", "no-cache")
+	c.Header("Expires", "0")
+}
+
 // taskView 是对外返回的视图结构,解码 JSON 列 + 隐藏内部字段。
 type taskView struct {
 	ID             uint64     `json:"id"`
@@ -81,6 +87,8 @@ func toView(t *Task) taskView {
 //	keyword           = prompt 模糊匹配
 //	start_at, end_at  = 时间区间;支持 RFC3339、"2006-01-02 15:04:05"、"2006-01-02"
 func (h *MeHandler) List(c *gin.Context) {
+	setImageTaskNoStore(c)
+
 	uid := middleware.UserID(c)
 	if uid == 0 {
 		resp.Unauthorized(c, "not logged in")
@@ -160,6 +168,8 @@ func parseFilterTime(s string) (time.Time, bool) {
 
 // GET /api/me/images/tasks/:id
 func (h *MeHandler) Get(c *gin.Context) {
+	setImageTaskNoStore(c)
+
 	uid := middleware.UserID(c)
 	if uid == 0 {
 		resp.Unauthorized(c, "not logged in")
@@ -182,6 +192,21 @@ func (h *MeHandler) Get(c *gin.Context) {
 	if t.UserID != uid {
 		resp.Fail(c, 40400, "task not found")
 		return
+	}
+	updated, err := h.dao.MarkStaleFailed(c.Request.Context(), t.TaskID,
+		time.Now().Add(-imageTaskListStaleAfter),
+		ErrPollTimeout,
+		"image task exceeded runner timeout; marked failed by task detail cleanup")
+	if err != nil {
+		resp.Internal(c, err.Error())
+		return
+	}
+	if updated {
+		t, err = h.dao.Get(c.Request.Context(), id)
+		if err != nil {
+			resp.Internal(c, err.Error())
+			return
+		}
 	}
 	resp.OK(c, toView(t))
 }
