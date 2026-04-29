@@ -964,6 +964,11 @@ onMounted(() => {
             </el-tooltip>
           </template>
         </el-table-column>
+        <el-table-column label="添加时间" min-width="120" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span>{{ fmtTime(row.created_at) }}</span>
+          </template>
+        </el-table-column>
         <el-table-column label="操作" width="282" fixed="right">
           <template #default="{ row }">
             <el-button
