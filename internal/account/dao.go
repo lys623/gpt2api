@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strconv"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -122,7 +123,51 @@ func (d *DAO) List(ctx context.Context, status string, keyword string, offset, l
 	argsPage = append(argsPage, limit, offset)
 	err = d.db.SelectContext(ctx, &rows,
 		"SELECT * FROM oai_accounts WHERE "+where+" ORDER BY id DESC LIMIT ? OFFSET ?", argsPage...)
+	if err != nil {
+		return nil, 0, err
+	}
 	fillAll(rows)
+
+	// 批量查询绑定的代理并填充辅助字段。
+	if len(rows) > 0 {
+		ids := make([]interface{}, 0, len(rows))
+		idxMap := make(map[uint64]int, len(rows))
+		for i, r := range rows {
+			ids = append(ids, r.ID)
+			idxMap[r.ID] = i
+		}
+		placeholders := make([]byte, 0, len(ids)*2)
+		for i := range ids {
+			if i > 0 {
+				placeholders = append(placeholders, ',')
+			}
+			placeholders = append(placeholders, '?')
+		}
+		type bindingRow struct {
+			AccountID uint64 `db:"account_id"`
+			ProxyID   uint64 `db:"proxy_id"`
+			Host      string `db:"host"`
+			Port      int    `db:"port"`
+			Remark    string `db:"remark"`
+		}
+		var bindings []bindingRow
+		_ = d.db.SelectContext(ctx, &bindings,
+			"SELECT b.account_id, b.proxy_id, p.host, p.port, p.remark "+
+				"FROM account_proxy_bindings b "+
+				"JOIN proxies p ON p.id = b.proxy_id "+
+				"WHERE b.account_id IN ("+string(placeholders)+")", ids...)
+		for _, bnd := range bindings {
+			if idx, ok := idxMap[bnd.AccountID]; ok {
+				rows[idx].BoundProxyID = bnd.ProxyID
+				if bnd.Remark != "" {
+					rows[idx].BoundProxyLabel = bnd.Remark
+				} else {
+					rows[idx].BoundProxyLabel = bnd.Host + ":" + strconv.Itoa(bnd.Port)
+				}
+			}
+		}
+	}
+
 	return rows, total, err
 }
 

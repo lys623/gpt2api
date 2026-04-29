@@ -67,6 +67,10 @@ type Account struct {
 	// 辅助字段(非数据库列):前端展示用标志位。
 	HasRT bool `db:"-" json:"has_rt"`
 	HasST bool `db:"-" json:"has_st"`
+
+	// 辅助字段:绑定的代理信息(List 查询时 LEFT JOIN 填充)。
+	BoundProxyID    uint64 `db:"-" json:"bound_proxy_id"`
+	BoundProxyLabel string `db:"-" json:"bound_proxy_label"`
 }
 
 // Binding 对应 account_proxy_bindings 表。

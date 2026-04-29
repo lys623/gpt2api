@@ -933,6 +933,18 @@ onMounted(() => {
             </el-tooltip>
           </template>
         </el-table-column>
+        <el-table-column label="代理" min-width="140" show-overflow-tooltip>
+          <template #default="{ row }">
+            <el-tag
+              v-if="row.bound_proxy_id"
+              size="small"
+              effect="plain"
+              type="info"
+              style="max-width:130px;overflow:hidden;text-overflow:ellipsis"
+            >{{ row.bound_proxy_label || ('#' + row.bound_proxy_id) }}</el-tag>
+            <span v-else class="muted">-</span>
+          </template>
+        </el-table-column>
         <el-table-column label="最近刷新" min-width="148" show-overflow-tooltip>
           <template #default="{ row }">
             <div class="refresh-cell">

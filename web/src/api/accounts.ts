@@ -31,6 +31,9 @@ export interface Account {
   has_rt: boolean
   has_st: boolean
 
+  bound_proxy_id: number
+  bound_proxy_label: string
+
   created_at: string
   updated_at: string
 }
