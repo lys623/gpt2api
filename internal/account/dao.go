@@ -291,14 +291,13 @@ func (d *DAO) ListAllActiveIDs(ctx context.Context) ([]uint64, error) {
 
 // QuotaSummary 全局额度汇总。
 type QuotaSummary struct {
-	TotalRemaining int64 `db:"total_remaining" json:"total_remaining"` // 所有未软删账号剩余额度之和
-	TotalCapacity  int64 `db:"total_capacity"  json:"total_capacity"`  // 所有未软删账号上限之和
-	ActiveAccounts int64 `db:"active_accounts" json:"active_accounts"` // 未软删账号总数
+	TotalRemaining int64 `db:"total_remaining" json:"total_remaining"` // 健康账号剩余额度之和
+	TotalCapacity  int64 `db:"total_capacity"  json:"total_capacity"`  // 健康账号上限之和
+	ActiveAccounts int64 `db:"active_accounts" json:"active_accounts"` // 健康账号总数
 }
 
-// SumQuota 汇总所有未软删账号的额度(含 dead/suspicious)。
-// 账号失效只影响能否被调度出图,不影响其已探测到的额度数字;
-// 全部纳入统计才能正确反映账号池的实际剩余容量。
+// SumQuota 仅汇总 status='healthy' 账号的额度。
+// 只统计健康账号才能真实反映当前可用的容量上限。
 func (d *DAO) SumQuota(ctx context.Context) (*QuotaSummary, error) {
 	var s QuotaSummary
 	err := d.db.GetContext(ctx, &s, `
@@ -307,7 +306,7 @@ SELECT
   COALESCE(SUM(image_quota_total),     0) AS total_capacity,
   COUNT(*)                                AS active_accounts
 FROM oai_accounts
-WHERE deleted_at IS NULL`)
+WHERE deleted_at IS NULL AND status = 'healthy'`)
 	return &s, err
 }
 

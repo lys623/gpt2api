@@ -743,7 +743,7 @@ onMounted(() => {
             <el-tag v-if="quotaSummary" type="success" size="small" style="font-size:13px">
               当前剩余总额度&nbsp;<b>{{ quotaSummary.total_remaining }}</b>
               &nbsp;/&nbsp;{{ quotaSummary.total_capacity }}
-              &nbsp;（{{ quotaSummary.active_accounts }} 个账号）
+              &nbsp;（{{ quotaSummary.active_accounts }} 个健康账号）
             </el-tag>
             <el-tag v-else type="info" size="small">额度统计加载中…</el-tag>
           </div>
