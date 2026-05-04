@@ -48,6 +48,7 @@ type Task struct {
 	KeyID           uint64     `db:"key_id"           json:"key_id"`
 	ModelID         uint64     `db:"model_id"         json:"model_id"`
 	AccountID       uint64     `db:"account_id"       json:"account_id"`
+	AccountEmail    string     `db:"account_email"    json:"account_email,omitempty"`
 	Prompt          string     `db:"prompt"           json:"prompt"`
 	N               int        `db:"n"                json:"n"`
 	Size            string     `db:"size"             json:"size"`

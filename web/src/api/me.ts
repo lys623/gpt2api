@@ -130,6 +130,7 @@ export interface ImageTask {
   user_id: number
   model_id: number
   account_id: number
+  account_email?: string
   prompt: string
   n: number
   size: string

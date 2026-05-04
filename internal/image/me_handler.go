@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/432539/gpt2api/internal/middleware"
+	"github.com/432539/gpt2api/internal/rbac"
 	"github.com/432539/gpt2api/pkg/resp"
 )
 
@@ -33,6 +34,7 @@ type taskView struct {
 	UserID         uint64     `json:"user_id"`
 	ModelID        uint64     `json:"model_id"`
 	AccountID      uint64     `json:"account_id"`
+	AccountEmail   string     `json:"account_email,omitempty"`
 	Prompt         string     `json:"prompt"`
 	N              int        `json:"n"`
 	Size           string     `json:"size"`
@@ -48,7 +50,11 @@ type taskView struct {
 	FinishedAt     *time.Time `json:"finished_at,omitempty"`
 }
 
-func toView(t *Task) taskView {
+func canViewAccountEmail(c *gin.Context) bool {
+	return rbac.HasAny(middleware.Role(c), rbac.PermAccountRead, rbac.PermUsageReadAll)
+}
+
+func toView(t *Task, includeAccountEmail bool) taskView {
 	urls := t.DecodeResultURLs()
 	fids := t.DecodeFileIDs()
 	for i, id := range fids {
@@ -69,7 +75,7 @@ func toView(t *Task) taskView {
 			urls[i] = BuildProxyURL(t.TaskID, i, "")
 		}
 	}
-	return taskView{
+	v := taskView{
 		ID: t.ID, TaskID: t.TaskID, UserID: t.UserID, ModelID: t.ModelID,
 		AccountID: t.AccountID, Prompt: t.Prompt, N: t.N, Size: t.Size,
 		Upscale: t.Upscale,
@@ -77,6 +83,10 @@ func toView(t *Task) taskView {
 		CreditCost: t.CreditCost, ImageURLs: urls, FileIDs: fids,
 		CreatedAt: t.CreatedAt, StartedAt: t.StartedAt, FinishedAt: t.FinishedAt,
 	}
+	if includeAccountEmail {
+		v.AccountEmail = t.AccountEmail
+	}
+	return v
 }
 
 // GET /api/me/images/tasks
@@ -132,8 +142,9 @@ func (h *MeHandler) List(c *gin.Context) {
 		return
 	}
 	items := make([]taskView, 0, len(tasks))
+	includeAccountEmail := canViewAccountEmail(c)
 	for i := range tasks {
-		items = append(items, toView(&tasks[i]))
+		items = append(items, toView(&tasks[i], includeAccountEmail))
 	}
 	resp.OK(c, gin.H{
 		"items":  items,
@@ -208,5 +219,5 @@ func (h *MeHandler) Get(c *gin.Context) {
 			return
 		}
 	}
-	resp.OK(c, toView(t))
+	resp.OK(c, toView(t, canViewAccountEmail(c)))
 }

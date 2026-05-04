@@ -147,11 +147,15 @@ UPDATE image_tasks
 func (d *DAO) Get(ctx context.Context, taskID string) (*Task, error) {
 	var t Task
 	err := d.db.GetContext(ctx, &t, `
-SELECT id, task_id, user_id, key_id, model_id, account_id, prompt, n, size, upscale, status,
-       conversation_id, file_ids, result_urls, error, estimated_credit, credit_cost,
-       created_at, started_at, finished_at
-  FROM image_tasks
- WHERE task_id = ?`, taskID)
+SELECT t.id, t.task_id, t.user_id, t.key_id, t.model_id, t.account_id,
+       COALESCE(a.email, '') AS account_email,
+       t.prompt, t.n, t.size, t.upscale, t.status,
+       t.conversation_id, t.file_ids, t.result_urls, t.error,
+       t.estimated_credit, t.credit_cost,
+       t.created_at, t.started_at, t.finished_at
+  FROM image_tasks t
+  LEFT JOIN oai_accounts a ON a.id = t.account_id
+ WHERE t.task_id = ?`, taskID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -184,38 +188,42 @@ func (d *DAO) ListByUserFiltered(ctx context.Context, userID uint64, f UserTaskF
 	if offset < 0 {
 		offset = 0
 	}
-	where := "user_id = ?"
+	where := "t.user_id = ?"
 	args := []interface{}{userID}
 	if f.Status != "" {
-		where += " AND status = ?"
+		where += " AND t.status = ?"
 		args = append(args, f.Status)
 	}
 	if f.Keyword != "" {
-		where += " AND prompt LIKE ?"
+		where += " AND t.prompt LIKE ?"
 		args = append(args, "%"+f.Keyword+"%")
 	}
 	if !f.Since.IsZero() {
-		where += " AND created_at >= ?"
+		where += " AND t.created_at >= ?"
 		args = append(args, f.Since)
 	}
 	if !f.Until.IsZero() {
-		where += " AND created_at < ?"
+		where += " AND t.created_at < ?"
 		args = append(args, f.Until)
 	}
 
 	var total int64
 	if err := d.db.GetContext(ctx, &total,
-		`SELECT COUNT(*) FROM image_tasks WHERE `+where, args...); err != nil {
+		`SELECT COUNT(*) FROM image_tasks t WHERE `+where, args...); err != nil {
 		return nil, 0, err
 	}
 
 	listSQL := `
-SELECT id, task_id, user_id, key_id, model_id, account_id, prompt, n, size, upscale, status,
-       conversation_id, file_ids, result_urls, error, estimated_credit, credit_cost,
-       created_at, started_at, finished_at
-  FROM image_tasks
+SELECT t.id, t.task_id, t.user_id, t.key_id, t.model_id, t.account_id,
+       COALESCE(a.email, '') AS account_email,
+       t.prompt, t.n, t.size, t.upscale, t.status,
+       t.conversation_id, t.file_ids, t.result_urls, t.error,
+       t.estimated_credit, t.credit_cost,
+       t.created_at, t.started_at, t.finished_at
+  FROM image_tasks t
+  LEFT JOIN oai_accounts a ON a.id = t.account_id
  WHERE ` + where + `
- ORDER BY id DESC
+ ORDER BY t.id DESC
  LIMIT ? OFFSET ?`
 	args2 := append(args, limit, offset)
 	var out []Task
@@ -225,7 +233,7 @@ SELECT id, task_id, user_id, key_id, model_id, account_id, prompt, n, size, upsc
 	return out, total, nil
 }
 
-// AdminTaskRow 是管理员视角的生成记录行,JOIN 了 users 表的邮箱。
+// AdminTaskRow 是管理员视角的生成记录行,JOIN 了用户邮箱和 GPT 账号邮箱。
 type AdminTaskRow struct {
 	Task
 	UserEmail string `db:"user_email" json:"user_email"`
@@ -234,7 +242,7 @@ type AdminTaskRow struct {
 // AdminTaskFilter 管理员查询过滤条件。
 type AdminTaskFilter struct {
 	UserID  uint64
-	Keyword string // 模糊匹配 prompt / email
+	Keyword string // 模糊匹配 prompt / 用户邮箱 / GPT 账号邮箱
 	Status  string
 	Since   time.Time
 	Until   time.Time
@@ -257,8 +265,8 @@ func (d *DAO) ListAdmin(ctx context.Context, f AdminTaskFilter, limit, offset in
 	}
 	if f.Keyword != "" {
 		like := "%" + f.Keyword + "%"
-		where += " AND (t.prompt LIKE ? OR u.email LIKE ?)"
-		args = append(args, like, like)
+		where += " AND (t.prompt LIKE ? OR u.email LIKE ? OR a.email LIKE ?)"
+		args = append(args, like, like, like)
 	}
 	if !f.Since.IsZero() {
 		where += " AND t.created_at >= ?"
@@ -270,13 +278,19 @@ func (d *DAO) ListAdmin(ctx context.Context, f AdminTaskFilter, limit, offset in
 	}
 
 	var total int64
-	countSQL := `SELECT COUNT(*) FROM image_tasks t LEFT JOIN users u ON u.id=t.user_id WHERE ` + where
+	countSQL := `
+SELECT COUNT(*)
+  FROM image_tasks t
+  LEFT JOIN users u ON u.id=t.user_id
+  LEFT JOIN oai_accounts a ON a.id=t.account_id
+ WHERE ` + where
 	if err := d.db.GetContext(ctx, &total, countSQL, args...); err != nil {
 		return nil, 0, err
 	}
 
 	listSQL := `
 SELECT t.id, t.task_id, t.user_id, t.key_id, t.model_id, t.account_id,
+       COALESCE(a.email, '') AS account_email,
        t.prompt, t.n, t.size, t.upscale, t.status,
        t.conversation_id, t.file_ids, t.result_urls, t.error,
        t.estimated_credit, t.credit_cost,
@@ -284,6 +298,7 @@ SELECT t.id, t.task_id, t.user_id, t.key_id, t.model_id, t.account_id,
        COALESCE(u.email, '') AS user_email
   FROM image_tasks t
   LEFT JOIN users u ON u.id = t.user_id
+  LEFT JOIN oai_accounts a ON a.id = t.account_id
  WHERE ` + where + `
  ORDER BY t.id DESC
  LIMIT ? OFFSET ?`

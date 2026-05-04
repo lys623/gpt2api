@@ -9,6 +9,7 @@ interface TaskRow {
   task_id: string
   user_id: number
   user_email: string
+  account_email: string
   prompt: string
   n: number
   size: string
@@ -176,6 +177,11 @@ onMounted(fetchList)
           <template #default="{ row }">
             <div>{{ row.user_email || '-' }}</div>
             <div style="font-size:11px;color:var(--el-text-color-secondary)">uid {{ row.user_id }}</div>
+          </template>
+        </el-table-column>
+        <el-table-column label="GPT账号" min-width="180" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span>{{ row.account_email || '-' }}</span>
           </template>
         </el-table-column>
         <el-table-column label="提示词" min-width="240" show-overflow-tooltip>

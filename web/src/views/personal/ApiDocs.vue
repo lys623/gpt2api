@@ -563,6 +563,9 @@ onMounted(async () => {
                     <span class="mute">{{ formatDateTime(t.created_at) }}</span>
                     <span class="credit">{{ formatCredit(t.credit_cost) }} 积分</span>
                   </div>
+                  <div v-if="t.account_email" class="account-email" :title="t.account_email">
+                    {{ t.account_email }}
+                  </div>
                   <div class="actions">
                     <el-button
                       v-if="t.image_urls?.length"
@@ -689,6 +692,14 @@ onMounted(async () => {
   .foot {
     display: flex; justify-content: space-between; margin-top: 6px; font-size: 12px;
     .credit { color: #e6a23c; font-weight: 600; }
+  }
+  .account-email {
+    margin-top: 6px;
+    color: var(--el-text-color-secondary);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .err {
     color: var(--el-color-danger); font-size: 12px; margin-top: 6px;
