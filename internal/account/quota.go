@@ -188,6 +188,13 @@ func (q *QuotaProber) ProbeOne(ctx context.Context, a *Account) (*QuotaResult, e
 		res.Error = "写库失败:" + err.Error()
 		return res, err
 	}
+	if err := q.applyProbeHealth(ctx, a, probe); err != nil {
+		q.log.Warn("apply quota probe health status failed",
+			zap.Uint64("account_id", a.ID),
+			zap.String("email", a.Email),
+			zap.Int("remaining", probe.remaining),
+			zap.Error(err))
+	}
 	res.OK = true
 	res.Remaining = probe.remaining
 	res.Total = probe.total
@@ -195,6 +202,51 @@ func (q *QuotaProber) ProbeOne(ctx context.Context, a *Account) (*QuotaResult, e
 	res.DefaultModel = probe.defaultModel
 	res.BlockedFeatures = probe.blockedFeatures
 	return res, nil
+}
+
+func (q *QuotaProber) applyProbeHealth(ctx context.Context, a *Account, probe probeOutcome) error {
+	status, cooldown, ok := quotaProbeStatus(a, probe.remaining, probe.resetAt)
+	if !ok {
+		return nil
+	}
+	if err := q.svc.dao.SetStatus(ctx, a.ID, status, cooldown); err != nil {
+		return err
+	}
+	q.log.Info("quota probe updated account health",
+		zap.Uint64("account_id", a.ID),
+		zap.String("email", a.Email),
+		zap.String("from_status", a.Status),
+		zap.String("to_status", status),
+		zap.Int("remaining", probe.remaining),
+		zap.Time("reset_at", probe.resetAt))
+	return nil
+}
+
+func quotaProbeStatus(a *Account, remaining int, resetAt time.Time) (string, *time.Time, bool) {
+	if a == nil || remaining < 0 {
+		return "", nil, false
+	}
+	if remaining > 0 {
+		if a.Status == StatusWarned || a.Status == StatusThrottled {
+			return StatusHealthy, nil, true
+		}
+		return "", nil, false
+	}
+
+	if a.Status == StatusDead || a.Status == StatusPaused || a.Status == StatusSuspicious {
+		return "", nil, false
+	}
+	var cooldown *time.Time
+	if !resetAt.IsZero() {
+		cooldown = &resetAt
+	}
+	if a.Status != StatusThrottled {
+		return StatusThrottled, cooldown, true
+	}
+	if cooldown != nil && (!a.CooldownUntil.Valid || !a.CooldownUntil.Time.Equal(*cooldown)) {
+		return StatusThrottled, cooldown, true
+	}
+	return "", nil, false
 }
 
 type probeOutcome struct {

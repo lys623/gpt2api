@@ -260,19 +260,30 @@ func (d *DAO) ListNeedRefresh(ctx context.Context, aheadSec int, limit int) ([]*
 //	(b) 上次探测超过 minIntervalSec 秒(常规轮询);
 //	(c) **剩余额度=0 且已过 reset_at**:这种"归零等重置"的账号要第一时间补探,
 //	    不受 minIntervalSec 限制,避免 5 小时轮询间隔导致的额度恢复滞后显示。
+//
+// 常规轮询只扫 healthy,避免对限流/告警账号做无意义探测;但过 reset_at 的零额度
+// 账号需要重新判断是否已恢复,所以允许 healthy/warned/throttled 进入补探。
 func (d *DAO) ListNeedProbeQuota(ctx context.Context, minIntervalSec int, limit int) ([]*Account, error) {
 	rows := make([]*Account, 0, limit)
 	threshold := time.Now().Add(-time.Duration(minIntervalSec) * time.Second)
 	err := d.db.SelectContext(ctx, &rows,
 		`SELECT * FROM oai_accounts
          WHERE deleted_at IS NULL
-           AND status = 'healthy'
+           AND status IN ('healthy', 'warned', 'throttled')
            AND (token_expires_at IS NULL OR token_expires_at > NOW())
            AND (
-                image_quota_updated_at IS NULL
-             OR image_quota_updated_at <= ?
-             OR (image_quota_remaining = 0
-                 AND (image_quota_reset_at IS NULL OR image_quota_reset_at <= NOW()))
+                (
+                    status = 'healthy'
+                    AND (
+                        image_quota_updated_at IS NULL
+                     OR image_quota_updated_at <= ?
+                    )
+                )
+             OR (
+                    image_quota_remaining = 0
+                    AND image_quota_reset_at IS NOT NULL
+                    AND image_quota_reset_at <= NOW()
+                )
            )
          ORDER BY CASE WHEN image_quota_updated_at IS NULL THEN 0 ELSE 1 END,
                   image_quota_updated_at ASC
