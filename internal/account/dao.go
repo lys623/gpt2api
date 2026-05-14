@@ -254,6 +254,24 @@ func (d *DAO) ListNeedRefresh(ctx context.Context, aheadSec int, limit int) ([]*
 	return rows, err
 }
 
+// ListDeadForRecovery 返回需要尝试自动恢复的失效账号。
+// 只挑有 RT/ST 的 dead 账号;last_refresh_at 用作恢复重试节流,避免永久失效账号被高频打爆。
+func (d *DAO) ListDeadForRecovery(ctx context.Context, retryInterval time.Duration, limit int) ([]*Account, error) {
+	rows := make([]*Account, 0, limit)
+	threshold := time.Now().Add(-retryInterval)
+	err := d.db.SelectContext(ctx, &rows,
+		`SELECT * FROM oai_accounts
+         WHERE deleted_at IS NULL
+           AND status = 'dead'
+           AND (refresh_token_enc IS NOT NULL OR session_token_enc IS NOT NULL)
+           AND (last_refresh_at IS NULL OR last_refresh_at <= ?)
+         ORDER BY CASE WHEN last_refresh_at IS NULL THEN 0 ELSE 1 END,
+                  last_refresh_at ASC
+         LIMIT ?`, threshold, limit)
+	fillAll(rows)
+	return rows, err
+}
+
 // ListNeedProbeQuota 返回需要探测图片额度的账号。命中以下任一条件即纳入:
 //
 //	(a) 从未探测过(image_quota_updated_at IS NULL);

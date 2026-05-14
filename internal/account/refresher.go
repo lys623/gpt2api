@@ -62,6 +62,8 @@ type Refresher struct {
 	kick chan struct{}
 }
 
+const deadRecoveryInterval = 30 * time.Minute
+
 // NewRefresher 构造。
 // HTTP client 默认直连(uTLS transport + InsecureSkipVerify,兼容 SSL Inspection 代理);
 // 如果注入了 AccountProxyResolver,则每次刷新会优先使用账号绑定的代理。
@@ -136,6 +138,8 @@ func (r *Refresher) Run(ctx context.Context) {
 	case <-time.After(5 * time.Second):
 	}
 
+	go r.runDeadRecovery(ctx)
+
 	for {
 		interval := time.Duration(r.settings.AccountRefreshIntervalSec()) * time.Second
 		if interval < 30*time.Second {
@@ -151,6 +155,23 @@ func (r *Refresher) Run(ctx context.Context) {
 			return
 		case <-time.After(interval):
 		case <-r.kick:
+		}
+	}
+}
+
+func (r *Refresher) runDeadRecovery(ctx context.Context) {
+	// 启动后先尝试一次,后续固定半小时重试。DAO 仍会用 last_refresh_at 做节流,
+	// 因此进程重启不会导致刚失败过的账号立刻反复请求上游。
+	r.recoverDeadOnce(ctx)
+
+	ticker := time.NewTicker(deadRecoveryInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			r.recoverDeadOnce(ctx)
 		}
 	}
 }
@@ -179,6 +200,50 @@ func (r *Refresher) scanOnce(ctx context.Context) {
 			defer wg.Done()
 			defer func() { <-sem }()
 			_, _ = r.RefreshAuto(ctx, a)
+		}()
+	}
+	wg.Wait()
+}
+
+func (r *Refresher) recoverDeadOnce(ctx context.Context) {
+	if !r.settings.AccountRefreshEnabled() {
+		return
+	}
+	conc := r.settings.AccountRefreshConcurrency()
+	rows, err := r.svc.dao.ListDeadForRecovery(ctx, deadRecoveryInterval, 128)
+	if err != nil {
+		r.log.Warn("list dead accounts for recovery failed", zap.Error(err))
+		return
+	}
+	if len(rows) == 0 {
+		return
+	}
+	r.log.Info("recovering dead accounts", zap.Int("count", len(rows)), zap.Int("concurrency", conc))
+
+	sem := make(chan struct{}, conc)
+	var wg sync.WaitGroup
+	for _, a := range rows {
+		a := a
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			res, err := r.RefreshAuto(ctx, a)
+			if err != nil {
+				r.log.Warn("dead account recovery failed",
+					zap.Uint64("account_id", a.ID),
+					zap.String("email", a.Email),
+					zap.Error(err))
+				return
+			}
+			if res != nil && res.OK {
+				r.log.Info("dead account recovered",
+					zap.Uint64("account_id", a.ID),
+					zap.String("email", a.Email),
+					zap.String("source", res.Source),
+					zap.Time("expires_at", res.ExpiresAt))
+			}
 		}()
 	}
 	wg.Wait()
@@ -524,7 +589,9 @@ func friendlyRefreshErr(err error) string {
 }
 
 // stripHTTPPrefix 去掉 Go net/http 错误里形如
-//   Post "https://auth.openai.com/oauth/token": dial tcp: ...
+//
+//	Post "https://auth.openai.com/oauth/token": dial tcp: ...
+//
 // 的 URL 前缀,只保留后面真正的原因,避免把敏感/冗长的 URL 暴露给前端。
 func stripHTTPPrefix(s string) string {
 	// 典型前缀: Get/Post/Put "https://...": rest
