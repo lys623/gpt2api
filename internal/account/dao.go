@@ -275,21 +275,25 @@ func (d *DAO) ListDeadForRecovery(ctx context.Context, retryInterval time.Durati
 // ListNeedProbeQuota 返回需要探测图片额度的账号。命中以下任一条件即纳入:
 //
 //	(a) 从未探测过(image_quota_updated_at IS NULL);
-//	(b) 上次探测超过 minIntervalSec 秒(常规轮询);
+//	(b) 上次探测超过 minIntervalSec 秒且状态为 healthy(常规轮询);
 //	(c) **剩余额度=0 且已过 reset_at**:这种"归零等重置"的账号要第一时间补探,
-//	    不受 minIntervalSec 限制,避免 5 小时轮询间隔导致的额度恢复滞后显示。
+//	    不受 minIntervalSec 限制,避免 5 小时轮询间隔导致的额度恢复滞后显示;
+//	(d) **throttled 账号每1小时探测一次**:限流可能提前解除,不依赖 reset_at
+//	    到期触发,每小时主动探测一次,发现限流解除后立即恢复为 healthy。
 //
 // 常规轮询只扫 healthy,避免对限流/告警账号做无意义探测;但过 reset_at 的零额度
 // 账号需要重新判断是否已恢复,所以允许 healthy/warned/throttled 进入补探。
 func (d *DAO) ListNeedProbeQuota(ctx context.Context, minIntervalSec int, limit int) ([]*Account, error) {
 	rows := make([]*Account, 0, limit)
 	threshold := time.Now().Add(-time.Duration(minIntervalSec) * time.Second)
+	throttledThreshold := time.Now().Add(-1 * time.Hour) // throttled 账号每1小时探测一次
 	err := d.db.SelectContext(ctx, &rows,
 		`SELECT * FROM oai_accounts
          WHERE deleted_at IS NULL
            AND status IN ('healthy', 'warned', 'throttled')
            AND (token_expires_at IS NULL OR token_expires_at > NOW())
            AND (
+                -- (a)/(b) 健康账号常规轮询
                 (
                     status = 'healthy'
                     AND (
@@ -297,15 +301,24 @@ func (d *DAO) ListNeedProbeQuota(ctx context.Context, minIntervalSec int, limit 
                      OR image_quota_updated_at <= ?
                     )
                 )
+                -- (c) 零额度 reset_at 到期补探(healthy/warned/throttled 均可)
              OR (
                     image_quota_remaining = 0
                     AND image_quota_reset_at IS NOT NULL
                     AND image_quota_reset_at <= NOW()
                 )
+                -- (d) throttled 账号每1小时主动探测一次,及时发现限流解除
+             OR (
+                    status = 'throttled'
+                    AND (
+                        image_quota_updated_at IS NULL
+                     OR image_quota_updated_at <= ?
+                    )
+                )
            )
          ORDER BY CASE WHEN image_quota_updated_at IS NULL THEN 0 ELSE 1 END,
                   image_quota_updated_at ASC
-         LIMIT ?`, threshold, limit)
+         LIMIT ?`, threshold, throttledThreshold, limit)
 	fillAll(rows)
 	return rows, err
 }
