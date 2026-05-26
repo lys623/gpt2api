@@ -35,6 +35,13 @@ export default defineConfig(({ mode }) => {
         resolvers: [ElementPlusResolver()],
         dts: 'src/components.d.ts',
       }),
+      {
+        name: 'vite-plugin-force-close',
+        closeBundle() {
+          // 强制退出：修复 Vite 在 Linux 服务器上有时由于 sass 或 unplugin-vue-components worker 挂起导致 build 结束但不退出的问题。
+          setTimeout(() => process.exit(0), 500)
+        }
+      }
     ],
     build: {
       outDir: 'dist',
