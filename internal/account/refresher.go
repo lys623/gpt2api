@@ -383,7 +383,7 @@ func (r *Refresher) verifyATOnWeb(ctx context.Context, accountID uint64, accessT
 	req.Header.Set("Referer", "https://chatgpt.com/")
 	req.Header.Set("Origin", "https://chatgpt.com")
 	req.Header.Set("User-Agent",
-		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36")
 
 	resp, err := r.clientFor(vctx, accountID).Do(req)
 	if err != nil {
@@ -486,7 +486,7 @@ func (r *Refresher) stToAT(ctx context.Context, accountID uint64, sessionToken s
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Referer", "https://chatgpt.com/")
 	req.Header.Set("User-Agent",
-		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36")
 
 	// 同时尝试两个可能的 cookie 名
 	req.AddCookie(&http.Cookie{Name: "__Secure-next-auth.session-token", Value: sessionToken})

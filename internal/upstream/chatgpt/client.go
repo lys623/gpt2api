@@ -28,7 +28,7 @@ func loggerL() *zap.Logger { return logger.L() }
 const (
 	// UA 对齐 HAR 抓包(Edge 143 / Chromium 143 on Windows 11);必须与
 	// commonHeaders 里的 Sec-Ch-Ua-* 完整套件自洽,否则上游认为指纹冲突。
-	DefaultUserAgent      = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0"
+	DefaultUserAgent      = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36 Edg/133.0.0.0"
 	DefaultClientVersion  = "prod-be885abbfcfe7b1f511e88b3003d9ee44757fbad"
 	DefaultClientBuildNum = "5955942"
 	DefaultLanguage       = "zh-CN"
@@ -157,12 +157,12 @@ func (c *Client) commonHeaders(req *http.Request) {
 	// 若主动声明 br/zstd,Go 不会解压,body 会是压缩字节,SSE / JSON 解析全坏。
 	// sec-ch-ua 完整套件(Edge 143 on Windows 11):真实浏览器每次都会带这整套,
 	// 少其中任何一项都可能触发 bot 指纹识别。保持与 DefaultUserAgent 对齐。
-	req.Header.Set("Sec-Ch-Ua", `"Microsoft Edge";v="143", "Chromium";v="143", "Not A(Brand";v="24"`)
+	req.Header.Set("Sec-Ch-Ua", `"Microsoft Edge";v="133", "Chromium";v="133", "Not A(Brand";v="24"`)
 	req.Header.Set("Sec-Ch-Ua-Arch", `"x86"`)
 	req.Header.Set("Sec-Ch-Ua-Bitness", `"64"`)
-	req.Header.Set("Sec-Ch-Ua-Full-Version", `"143.0.3650.96"`)
+	req.Header.Set("Sec-Ch-Ua-Full-Version", `"133.0.0.0"`)
 	req.Header.Set("Sec-Ch-Ua-Full-Version-List",
-		`"Microsoft Edge";v="143.0.3650.96", "Chromium";v="143.0.7499.147", "Not A(Brand";v="24.0.0.0"`)
+		`"Microsoft Edge";v="133.0.0.0", "Chromium";v="133.0.0.0", "Not A(Brand";v="24.0.0.0"`)
 	req.Header.Set("Sec-Ch-Ua-Mobile", "?0")
 	req.Header.Set("Sec-Ch-Ua-Model", `""`)
 	req.Header.Set("Sec-Ch-Ua-Platform", `"Windows"`)
@@ -290,7 +290,7 @@ func (c *Client) Bootstrap(ctx context.Context) error {
 	req.Header.Set("User-Agent", c.opts.UserAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6")
-	req.Header.Set("Sec-Ch-Ua", `"Microsoft Edge";v="143", "Chromium";v="143", "Not A(Brand";v="24"`)
+	req.Header.Set("Sec-Ch-Ua", `"Microsoft Edge";v="133", "Chromium";v="133", "Not A(Brand";v="24"`)
 	req.Header.Set("Sec-Ch-Ua-Mobile", "?0")
 	req.Header.Set("Sec-Ch-Ua-Platform", `"Windows"`)
 	req.Header.Set("Sec-Fetch-Dest", "document")

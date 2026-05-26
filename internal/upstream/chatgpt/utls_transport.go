@@ -158,9 +158,9 @@ func (rt *utlsRoundTripper) dialTLS(ctx context.Context, network, addr string) (
 		NextProtos:         alpn,
 		MinVersion:         tls.VersionTLS12,
 		InsecureSkipVerify: true, //nolint:gosec
-	}, utls.HelloChrome_131)
+	}, utls.HelloChrome_133)
 
-	// 关键:utls 的预设 HelloID(HelloChrome_131 等)里 ALPNExtension 的值
+	// 关键:utls 的预设 HelloID(HelloChrome_133 等)里 ALPNExtension 的值
 	// 是按 Chrome 原样硬编码的 ["h2", "http/1.1"],Config.NextProtos 对预设
 	// HelloID 不生效。forceH1 场景下必须显式覆盖 Extension 里的值,
 	// 否则服务器仍按 h2 协商,后续 h1.Transport 会读到 HTTP/2 SETTINGS frame
