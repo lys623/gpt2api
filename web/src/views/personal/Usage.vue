@@ -4,9 +4,12 @@ import { Refresh } from '@element-plus/icons-vue'
 import * as meApi from '@/api/me'
 import { formatCredit, formatDateTime, formatErrorCode } from '@/utils/format'
 import { ENABLE_CHAT_MODEL } from '@/config/feature'
+import { useUserStore } from '@/stores/user'
+import * as accountsApi from '@/api/accounts'
 
 // ==================== 概览 + 每日 + 模型 TOP ====================
 
+const userStore = useUserStore()
 const statsLoading = ref(false)
 const stats = ref<meApi.MyStatsResp | null>(null)
 
@@ -125,9 +128,26 @@ const logTotal = ref(0)
 const logFilter = reactive({
   type: '' as '' | 'chat' | 'image',
   status: '' as '' | 'success' | 'failed',
+  account_id: undefined as number | undefined,
   limit: 20,
   offset: 0,
 })
+
+const accountOptions = ref<{ id: number, email: string }[]>([])
+const accountLoading = ref(false)
+
+async function remoteSearchAccounts(query: string) {
+  if (!userStore.isAdmin) return
+  accountLoading.value = true
+  try {
+    const res = await accountsApi.listAccounts({ keyword: query, page_size: 20 })
+    accountOptions.value = res.list.map((a: any) => ({ id: a.id, email: a.email }))
+  } catch (e) {
+    console.error(e)
+  } finally {
+    accountLoading.value = false
+  }
+}
 
 async function loadLogs() {
   logLoading.value = true
@@ -135,6 +155,7 @@ async function loadLogs() {
     const d = await meApi.listMyUsageLogs({
       type: logFilter.type || undefined,
       status: logFilter.status || undefined,
+      account_id: logFilter.account_id,
       limit: logFilter.limit,
       offset: logFilter.offset,
     })
@@ -213,6 +234,9 @@ function onTabChange(v: string | number) {
 }
 
 onMounted(() => {
+  if (userStore.isAdmin) {
+    remoteSearchAccounts('')
+  }
   loadStats()
   loadLogs()
 })
@@ -475,6 +499,9 @@ onMounted(() => {
                 <el-option label="全部" value="" />
                 <el-option label="成功" value="success" />
                 <el-option label="失败" value="failed" />
+              </el-select>
+              <el-select v-if="userStore.isAdmin" v-model="logFilter.account_id" style="width:180px" clearable filterable remote reserve-keyword placeholder="GPT账号" :remote-method="remoteSearchAccounts" :loading="accountLoading" @change="refreshLogs">
+                <el-option v-for="a in accountOptions" :key="a.id" :label="a.email" :value="a.id" />
               </el-select>
             </div>
             <el-button :loading="logLoading" @click="refreshLogs">

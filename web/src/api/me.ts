@@ -83,6 +83,7 @@ export interface MyStatsResp {
 export function listMyUsageLogs(params: {
   type?: 'chat' | 'image' | ''
   status?: string
+  account_id?: number
   since?: string
   until?: string
   limit?: number

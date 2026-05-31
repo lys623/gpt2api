@@ -32,6 +32,9 @@ func filterFromMeQuery(c *gin.Context, userID uint64) Filter {
 	if kid, err := strconv.ParseUint(c.Query("key_id"), 10, 64); err == nil {
 		f.KeyID = kid
 	}
+	if aid, err := strconv.ParseUint(c.Query("account_id"), 10, 64); err == nil {
+		f.AccountID = aid
+	}
 	return f
 }
 
