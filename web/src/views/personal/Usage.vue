@@ -129,6 +129,7 @@ const logFilter = reactive({
   type: '' as '' | 'chat' | 'image',
   status: '' as '' | 'success' | 'failed',
   account_id: undefined as number | undefined,
+  timeRange: null as [Date, Date] | null,
   limit: 20,
   offset: 0,
 })
@@ -152,10 +153,18 @@ async function remoteSearchAccounts(query: string) {
 async function loadLogs() {
   logLoading.value = true
   try {
+    const [since, until] = logFilter.timeRange
+      ? [
+          logFilter.timeRange[0].toISOString(),
+          logFilter.timeRange[1].toISOString(),
+        ]
+      : [undefined, undefined]
     const d = await meApi.listMyUsageLogs({
       type: logFilter.type || undefined,
       status: logFilter.status || undefined,
       account_id: logFilter.account_id,
+      since,
+      until,
       limit: logFilter.limit,
       offset: logFilter.offset,
     })
@@ -503,6 +512,16 @@ onMounted(() => {
               <el-select v-if="userStore.isAdmin" v-model="logFilter.account_id" style="width:180px" clearable filterable remote reserve-keyword placeholder="GPT账号" :remote-method="remoteSearchAccounts" :loading="accountLoading" @change="refreshLogs">
                 <el-option v-for="a in accountOptions" :key="a.id" :label="a.email" :value="a.id" />
               </el-select>
+              <el-date-picker
+                v-model="logFilter.timeRange"
+                type="datetimerange"
+                range-separator="~"
+                start-placeholder="开始时间"
+                end-placeholder="结束时间"
+                format="YYYY-MM-DD HH:mm"
+                style="width:340px"
+                @change="refreshLogs"
+              />
             </div>
             <el-button :loading="logLoading" @click="refreshLogs">
               <el-icon><Refresh /></el-icon> 刷新
