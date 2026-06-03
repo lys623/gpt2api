@@ -11,7 +11,7 @@ const loading = ref(false)
 const filter = reactive<{ status?: string; keyword?: string }>({ status: '', keyword: '' })
 const rows = ref<accountApi.Account[]>([])
 const total = ref(0)
-const pager = reactive({ page: 1, page_size: 10 })
+const pager = reactive({ page: 1, page_size: 100 })
 const proxies = ref<proxyApi.Proxy[]>([])
 
 async function fetchList() {
