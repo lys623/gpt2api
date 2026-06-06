@@ -141,7 +141,7 @@ async function remoteSearchAccounts(query: string) {
   if (!userStore.isAdmin) return
   accountLoading.value = true
   try {
-    const res = await accountsApi.listAccounts({ keyword: query, page_size: 20 })
+    const res = await accountsApi.listAccounts({ keyword: query, page_size: 2000 })
     accountOptions.value = res.list.map((a: any) => ({ id: a.id, email: a.email }))
   } catch (e) {
     console.error(e)
