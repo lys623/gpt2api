@@ -176,7 +176,7 @@ const formDefault = {
   oai_device_id: '',
   client_id: 'app_EMoamEEZ73f0CkXaXp7hrann',
   chatgpt_account_id: '',
-  account_type: 'codex',
+  account_type: 'chatgpt',
   plan_type: 'plus',
   daily_image_quota: 100,
   notes: '',
@@ -207,7 +207,7 @@ async function openEdit(row: accountApi.Account) {
     oai_device_id: row.oai_device_id || '',
     client_id: row.client_id || formDefault.client_id,
     chatgpt_account_id: row.chatgpt_account_id || '',
-    account_type: row.account_type || 'codex',
+    account_type: row.account_type || 'chatgpt',
     plan_type: row.plan_type || 'plus',
     daily_image_quota: row.daily_image_quota ?? 100,
     notes: row.notes || '',
@@ -933,6 +933,14 @@ onMounted(() => {
             </el-tooltip>
           </template>
         </el-table-column>
+        <el-table-column label="下次重制" width="130" align="center">
+          <template #default="{ row }">
+            <span v-if="asDate(row.image_quota_reset_at)" class="reset-time">
+              {{ fmtTime(row.image_quota_reset_at) }}
+            </span>
+            <span v-else class="muted">-</span>
+          </template>
+        </el-table-column>
         <el-table-column label="代理" min-width="140" show-overflow-tooltip>
           <template #default="{ row }">
             <el-tag
@@ -1376,6 +1384,7 @@ onMounted(() => {
 .creds { display: flex; gap: 4px; }
 .quota b { color: var(--el-color-primary); font-weight: 600; }
 .muted { color: var(--el-text-color-secondary); }
+.reset-time { font-variant-numeric: tabular-nums; font-size: 13px; }
 .warn  { color: var(--el-color-warning); font-weight: 500; }
 .err   {
   color: var(--el-color-danger);
