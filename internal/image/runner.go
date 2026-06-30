@@ -872,6 +872,9 @@ func isImageHandoffMessage(s string) bool {
 }
 
 func assistantFailureCode(message, fallback string) string {
+	if isAuthRequiredMessage(message) {
+		return ErrAuthRequired
+	}
 	if isRateLimitMessage(message) {
 		return ErrRateLimited
 	}
@@ -882,6 +885,16 @@ func assistantFailureCode(message, fallback string) string {
 		return ErrUpstreamRejected
 	}
 	return fallback
+}
+
+func isAuthRequiredMessage(message string) bool {
+	s := strings.ToLower(strings.TrimSpace(message))
+	if s == "" {
+		return false
+	}
+	return strings.Contains(s, "auth_required") ||
+		strings.Contains(s, "authentication token is expired") ||
+		strings.Contains(s, "please try signing in again")
 }
 
 func isRateLimitMessage(message string) bool {
