@@ -362,7 +362,7 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 					return false, ErrRateLimited, err
 				}
 				if ue, ok := err.(*chatgpt.UpstreamError); ok && ue.IsUnauthorized() {
-					r.sched.MarkDead(context.Background(), lease.Account.ID)
+					r.sched.MarkPaused(context.Background(), lease.Account.ID)
 					return false, ErrAuthRequired, err
 				}
 				return false, ErrUpstream, fmt.Errorf("upload reference %d: %w", idx, err)
@@ -417,7 +417,7 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 		r.sched.MarkRateLimited(context.Background(), lease.Account.ID)
 		return false, ErrRateLimited, err
 	} else if ue, ok := err.(*chatgpt.UpstreamError); ok && ue.IsUnauthorized() {
-		r.sched.MarkDead(context.Background(), lease.Account.ID)
+		r.sched.MarkPaused(context.Background(), lease.Account.ID)
 		return false, ErrAuthRequired, err
 	}
 
@@ -746,7 +746,7 @@ func (r *Runner) markAccountForUpstreamCode(code string, accountID uint64) {
 	case ErrRateLimited:
 		r.sched.MarkRateLimited(context.Background(), accountID)
 	case ErrAuthRequired:
-		r.sched.MarkDead(context.Background(), accountID)
+		r.sched.MarkPaused(context.Background(), accountID)
 	}
 }
 

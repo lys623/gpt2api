@@ -569,7 +569,7 @@ func (h *Handler) handleUpstreamErr(c *gin.Context, lease *scheduler.Lease, err 
 		case ue.IsRateLimited():
 			h.Scheduler.MarkRateLimited(c.Request.Context(), lease.Account.ID)
 		case ue.IsUnauthorized():
-			h.Scheduler.MarkDead(c.Request.Context(), lease.Account.ID)
+			h.Scheduler.MarkPaused(c.Request.Context(), lease.Account.ID)
 		}
 		refund()
 		logger.L().Error("chat upstream error",

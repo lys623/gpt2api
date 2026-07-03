@@ -551,6 +551,11 @@ func (s *Scheduler) MarkDead(ctx context.Context, accountID uint64) {
 	_ = s.accSvc.DAO().SetStatus(ctx, accountID, account.StatusDead, nil)
 }
 
+// MarkPaused 账号暂停(auth_required / token 过期),不再自动调度,需管理员人工恢复。
+func (s *Scheduler) MarkPaused(ctx context.Context, accountID uint64) {
+	_ = s.accSvc.DAO().SetStatus(ctx, accountID, account.StatusPaused, nil)
+}
+
 // RestoreHealthy 调度成功后回归健康(仅对 throttled 且冷却到期有效,
 // 简单起见此处不强检查,由管理员按需恢复)。
 func (s *Scheduler) RestoreHealthy(ctx context.Context, accountID uint64) {
