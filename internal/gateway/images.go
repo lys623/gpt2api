@@ -29,7 +29,7 @@ import (
 const maxReferenceImageBytes = 20 * 1024 * 1024
 
 // 同一次请求最多携带的参考图数量。
-const maxReferenceImages = 4
+const maxReferenceImages = 16
 
 const (
 	// 异步图像任务允许比同步请求等得更久。复杂图/文字图常见上游已经生成,
@@ -128,8 +128,8 @@ func (h *ImagesHandler) ImageGenerations(c *gin.Context) {
 	if req.N <= 0 {
 		req.N = 1
 	}
-	if req.N > 4 {
-		req.N = 4 // 目前 IMG2 终稿单轮稳定产出 1-4 张,保守上限
+	if req.N > 10 {
+		req.N = 10 // 最大支持 10 张并发生图
 	}
 	if req.Size == "" {
 		req.Size = "1024x1024"
@@ -1032,7 +1032,7 @@ func (h *ImagesHandler) ImageEdits(c *gin.Context) {
 	}
 	n := 1
 	if s := c.Request.FormValue("n"); s != "" {
-		if v, err := parseIntClamp(s, 1, 4); err == nil {
+		if v, err := parseIntClamp(s, 1, 10); err == nil {
 			n = v
 		}
 	}
