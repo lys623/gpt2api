@@ -418,8 +418,8 @@ const i2iSending = ref(false)
 const i2iResult = ref<PlayImageData[]>([])
 const i2iError = ref('')
 const i2iAbort = ref<AbortController | null>(null)
-// 与 gateway/images.go 的 maxReferenceImageBytes(20MB) 与最多 4 张一致
-const MAX_REF_COUNT = 4
+// 与 gateway/images.go 的 maxReferenceImageBytes(20MB) 与最多 16 张一致
+const MAX_REF_COUNT = 16
 const MAX_REF_BYTES = 20 * 1024 * 1024
 
 function handleFilePick(e: Event) {
@@ -428,7 +428,7 @@ function handleFilePick(e: Event) {
   if (!files) return
   for (const file of Array.from(files)) {
     if (refImages.value.length >= MAX_REF_COUNT) {
-      ElMessage.warning('参考图最多 4 张')
+      ElMessage.warning('参考图最多 16 张')
       break
     }
     if (file.size > MAX_REF_BYTES) {
@@ -761,7 +761,7 @@ watch(activeTab, (v) => {
 
             <div class="side-row">
               <label class="side-lbl">张数 <span class="side-val">{{ t2iN }}</span></label>
-              <el-slider v-model="t2iN" :min="1" :max="4" show-stops />
+              <el-slider v-model="t2iN" :min="1" :max="10" show-stops />
             </div>
 
             <div class="side-row">
@@ -884,7 +884,7 @@ watch(activeTab, (v) => {
               <label class="upload-zone">
                 <el-icon class="up-ic"><UploadFilled /></el-icon>
                 <div class="up-t">点击选择 / 拖拽图片到这里</div>
-                <div class="up-s">最多 4 张,每张 ≤ 20MB</div>
+                <div class="up-s">最多 16 张,每张 ≤ 20MB</div>
                 <input type="file" accept="image/*" multiple @change="handleFilePick" />
               </label>
 

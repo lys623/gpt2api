@@ -303,7 +303,7 @@ export async function playGenerateImage(
 }
 
 // playEditImage 走 /playground/image-edit,multipart/form-data,严格对齐 /v1/images/edits 规范。
-// files 数组是 File 对象(来自 <input type="file"> 或拖拽),至少 1 张,最多 4 张。
+// files 数组是 File 对象(来自 <input type="file"> 或拖拽),至少 1 张,最多 16 张。
 export async function playEditImage(
   model: string,
   prompt: string,

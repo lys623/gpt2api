@@ -207,7 +207,7 @@ const imageCurl = computed(() => {
 })
 
 // 图生图 curl —— reference_images 接受 URL / data:URL / 纯 base64 三种写法,
-// 一次最多 4 张,单张最大 20MB。后端会自动下载/解码并转给上游。
+// 一次最多 16 张,单张最大 20MB。后端会自动下载/解码并转给上游。
 const imageRefCurl = computed(() => {
   const model = selectedImageModel.value || 'gpt-image-2'
   return `curl ${origin.value}/v1/images/generations \\
@@ -261,7 +261,7 @@ const imagePythonRefRequests = computed(() => {
 API_KEY = "\${YOUR_API_KEY}"
 BASE_URL = "${origin.value}/v1"
 
-# reference_images 单张最大 20MB,最多 4 张;支持 URL / data:URL / 纯 base64
+# reference_images 单张最大 20MB,最多 16 张;支持 URL / data:URL / 纯 base64
 def img_b64(path: str) -> str:
     with open(path, "rb") as f:
         return base64.b64encode(f.read()).decode()
@@ -476,7 +476,7 @@ onMounted(async () => {
               <pre class="code"><code>{{ imageRefCurl }}</code></pre>
               <div class="hint">
                 reference_images 支持 <code>URL</code> / <code>data:URL</code> / 纯 <code>base64</code>;
-                单次最多 4 张,单张最大 20MB。
+                单次最多 16 张,单张最大 20MB。
               </div>
               <el-button size="small" @click="copy(imageRefCurl)">复制 curl</el-button>
             </el-tab-pane>
@@ -492,7 +492,7 @@ onMounted(async () => {
               <pre class="code"><code>{{ imagePythonRefRequests }}</code></pre>
               <div class="hint">
                 reference_images 同时支持 <code>URL</code> / <code>data:URL</code> / 纯 <code>base64</code>,
-                最多 4 张、单张最大 20MB,服务端会自动下载并解码。
+                最多 16 张、单张最大 20MB,服务端会自动下载并解码。
               </div>
               <el-button size="small" @click="copy(imagePythonRefRequests)">复制 Python</el-button>
             </el-tab-pane>
